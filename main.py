@@ -10,7 +10,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 5153650495  # Твой ID
 
 # СЮДА НАПИШИ ЮЗЕРНЕЙМ СВОЕГО КАНАЛА БЕЗ СИМВОЛА @
-CHANNEL_USERNAME = "gjjgfjjgujgujugjugju3535454666" 
+CHANNEL_USERNAME = "hurghgruuruhgrughuhgur47846776v7" 
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
