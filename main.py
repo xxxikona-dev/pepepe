@@ -141,10 +141,12 @@ async def manage_device(callback: types.CallbackQuery):
         reply_markup=get_device_menu(device_id)
     )
 
+# --- ИСПРАВЛЕННЫЙ БЛОК КАТЕГОРИЙ (Замени им старый handle_categories) ---
 @dp.callback_query(F.data.startswith("cat_"))
 async def handle_categories(callback: types.CallbackQuery):
     data = callback.data.split("_")
     cat, dev_id = data[1], data[2]
+    
     keyboard = []
     text = ""
     
@@ -183,8 +185,18 @@ async def handle_categories(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{dev_id}")]
         ]
         text = "🛠 **Утилиты**"
-        
-    await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    else:
+        return
+
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    # Проверяем, под каким типом сообщения нажали на кнопку
+    if callback.message.photo or callback.message.document:
+        # Если это картинка (скриншот) — редактируем подпись под ней
+        await callback.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        # Если это обычное текстовое меню — редактируем сам текст
+        await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=markup)
 
 @dp.callback_query(F.data.startswith("cmd_"))
 async def send_command(callback: types.CallbackQuery):
