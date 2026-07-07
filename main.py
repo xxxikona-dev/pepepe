@@ -99,9 +99,16 @@ async def cmd_start(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     await message.answer("🤖 Панель управления Windows готова. Все данные сохранены в БД.", reply_markup=get_main_menu())
 
+# --- ФИКС: Безопасный выход в главное меню из-под медиа ---
 @dp.callback_query(F.data == "go_to_main_start")
 async def go_to_main_start(callback: types.CallbackQuery):
-    await callback.message.edit_text("🤖 **Главное меню**", parse_mode="Markdown", reply_markup=get_main_menu())
+    text = "🤖 **Главное меню**"
+    markup = get_main_menu()
+    
+    if callback.message.photo or callback.message.document:
+        await callback.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=markup)
 
 @dp.callback_query(F.data == "back_to_list")
 async def show_devices_callback(callback: types.CallbackQuery):
@@ -114,7 +121,6 @@ async def show_devices_callback(callback: types.CallbackQuery):
     current_time = int(time.time())
     
     for dev_id, name, last_seen in devices:
-        # Если последнее обновление было меньше 3 минут (180 сек) назад — ПК активен
         if current_time - last_seen < 180:
             status_emoji = "🟢"
         else:
@@ -124,6 +130,7 @@ async def show_devices_callback(callback: types.CallbackQuery):
         
     await callback.message.edit_text("🎛 **Список устройств из Базы Данных:**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
+# --- ФИКС: Безопасный возврат назад из-под скриншота ---
 @dp.callback_query(F.data.startswith("manage_"))
 async def manage_device(callback: types.CallbackQuery):
     device_id = callback.data.split("_")[1]
@@ -135,13 +142,14 @@ async def manage_device(callback: types.CallbackQuery):
     current_time = int(time.time())
     status_str = "🟢 Онлайн" if current_time - device_info[1] < 180 else "🔴 Оффлайн"
     
-    await callback.message.edit_text(
-        text=f"💻 Управление ПК: *{device_info[0]}*\nСтатус: {status_str}\n🆔 ID: `{device_id}`", 
-        parse_mode="Markdown", 
-        reply_markup=get_device_menu(device_id)
-    )
+    text = f"💻 Управление ПК: *{device_info[0]}*\nСтатус: {status_str}\n🆔 ID: `{device_id}`"
+    markup = get_device_menu(device_id)
+    
+    if callback.message.photo or callback.message.document:
+        await callback.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=markup)
 
-# --- ИСПРАВЛЕННЫЙ БЛОК КАТЕГОРИЙ (Замени им старый handle_categories) ---
 @dp.callback_query(F.data.startswith("cat_"))
 async def handle_categories(callback: types.CallbackQuery):
     data = callback.data.split("_")
@@ -190,12 +198,9 @@ async def handle_categories(callback: types.CallbackQuery):
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    # Проверяем, под каким типом сообщения нажали на кнопку
     if callback.message.photo or callback.message.document:
-        # Если это картинка (скриншот) — редактируем подпись под ней
         await callback.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=markup)
     else:
-        # Если это обычное текстовое меню — редактируем сам текст
         await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=markup)
 
 @dp.callback_query(F.data.startswith("cmd_"))
@@ -211,10 +216,8 @@ async def send_command(callback: types.CallbackQuery):
 
 @dp.channel_post(F.text.startswith("INIT_START:"))
 async def handle_client_startup(message: types.Message):
-    """Срабатывает строго при запуске или перезапуске клиента на ПК"""
     try:
         _, device_id, pc_name = message.text.split(":")
-        # Принудительно сбрасываем флаг уведомления, чтобы бот напомнил о включении
         update_device_in_db(device_id, pc_name, is_notified=0)
         await bot.send_message(
             chat_id=ADMIN_ID, 
@@ -234,17 +237,14 @@ async def handle_channel_ping(message: types.Message):
         current_time = int(time.time())
         
         if not dev:
-            # Абсолютно новый ПК
             update_device_in_db(device_id, pc_name, is_notified=1)
             await bot.send_message(chat_id=ADMIN_ID, text=f"🆕 **Зарегистрирован новый ПК:** `{pc_name}`", parse_mode="Markdown", reply_markup=get_device_menu(device_id))
         else:
-            # ПК уже знаком. Проверяем, вышел ли он из долгого оффлайна
             last_seen, is_notified = dev[1], dev[2]
             if current_time - last_seen >= 180 or is_notified == 0:
                 update_device_in_db(device_id, pc_name, is_notified=1)
                 await bot.send_message(chat_id=ADMIN_ID, text=f"🟢 **ПК `{pc_name}` снова на связи!**", parse_mode="Markdown", reply_markup=get_device_menu(device_id))
             else:
-                # Обычный тихий фоновый пинг
                 update_device_in_db(device_id, pc_name)
                 
         await message.delete()
@@ -292,7 +292,7 @@ async def receive_channel_log(message: types.Message):
     except: pass
 
 async def main():
-    init_db()  # Инициализируем базу данных при старте
+    init_db()
     print("[СЕРВЕР] База данных подключена. Ожидание сигналов...")
     await dp.start_polling(bot)
 
