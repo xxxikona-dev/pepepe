@@ -1,4 +1,4 @@
-# main.py - MQTT Server + Telegram Bot
+# main.py - MQTT Server + Telegram Bot с .env
 import paho.mqtt.client as mqtt
 import json
 import sqlite3
@@ -15,6 +15,16 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 
+# Пытаемся загрузить dotenv, если он есть
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logger_env = logging.getLogger(__name__)
+    logger_env.info("✅ .env файл загружен")
+except ImportError:
+    # Если dotenv не установлен, просто используем os.environ
+    pass
+
 # ============ НАСТРОЙКА ЛОГИРОВАНИЯ ============
 logging.basicConfig(
     level=logging.INFO,
@@ -25,17 +35,38 @@ logger = logging.getLogger(__name__)
 
 # ============ КОНФИГУРАЦИЯ ============
 
-# MQTT
+# MQTT - берем из переменных окружения или используем значения по умолчанию
 MQTT_CONFIG = {
-    "host": "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud",
-    "port": 8883,
-    "username": "kkk",  # ЗАМЕНИТЕ
-    "password": "102036514530"  # ЗАМЕНИТЕ
+    "host": os.getenv("MQTT_HOST", "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud"),
+    "port": int(os.getenv("MQTT_PORT", "8883")),
+    "username": os.getenv("MQTT_USERNAME", "admin"),
+    "password": os.getenv("MQTT_PASSWORD", "your_password_here")
 }
 
-# Telegram
-BOT_TOKEN = "BOT_TOKEN"  # ЗАМЕНИТЕ НА ТОКЕН ВАШЕГО БОТА
-ADMIN_ID = 5153650495  # ВАШ ID В TELEGRAM
+# Telegram - берем из переменных окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5153650495"))
+
+# ============ ПРОВЕРКА НАСТРОЕК ============
+if not BOT_TOKEN:
+    logger.error("=" * 60)
+    logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
+    logger.error("")
+    logger.error("Способы решения:")
+    logger.error("1. Создайте файл .env в папке с проектом:")
+    logger.error("   BOT_TOKEN=ваш_токен_бота")
+    logger.error("   ADMIN_ID=5153650495")
+    logger.error("   MQTT_PASSWORD=ваш_пароль")
+    logger.error("")
+    logger.error("2. Или установите переменные окружения:")
+    logger.error("   export BOT_TOKEN='ваш_токен_бота'")
+    logger.error("   export ADMIN_ID='5153650495'")
+    logger.error("=" * 60)
+    sys.exit(1)
+
+if MQTT_CONFIG["password"] == "your_password_here":
+    logger.warning("⚠️ Используется пароль MQTT по умолчанию!")
+    logger.warning("   Установите MQTT_PASSWORD в .env или переменных окружения")
 
 # ============ БАЗА ДАННЫХ ============
 DB_PATH = os.path.join(os.path.dirname(__file__), "devices.db")
@@ -254,7 +285,6 @@ class MQTTDeviceServer:
             self.online_devices.add(device_id)
             logger.info(f"🟢 {name} ({device_id[:8]}) подключен")
             
-            # Уведомление в Telegram
             if self.bot:
                 asyncio.create_task(self.send_telegram_notification(f"🟢 Устройство подключено: {name}"))
             
@@ -283,13 +313,11 @@ class MQTTDeviceServer:
             result_str = json.dumps(result, indent=2, ensure_ascii=False)
             save_command_history(device_id, command, result_str, "completed")
             
-            # Отправляем результат в Telegram
             if self.bot:
                 device = get_device(device_id)
                 name = device[1] if device else device_id[:8]
                 
                 if command == "screenshot":
-                    # Скриншот обрабатывается отдельно
                     pass
                 else:
                     text = f"📌 Результат команды *{command}*\n"
@@ -316,7 +344,6 @@ class MQTTDeviceServer:
                 device = get_device(device_id)
                 name = device[1] if device else device_id[:8]
                 
-                # Отправляем скриншот в Telegram
                 if self.bot:
                     try:
                         image_bytes = base64.b64decode(payload)
@@ -344,7 +371,6 @@ class MQTTDeviceServer:
             os_info = data.get('os', 'Unknown')
             update_device(device_id, name, os_info)
             
-            # Отправляем информацию в Telegram
             if self.bot:
                 text = f"💻 *Системная информация*\n"
                 text += f"🖥 Устройство: *{name}*\n\n"
@@ -598,7 +624,6 @@ def setup_bot_handlers(dp: Dispatcher, mqtt_server: MQTTDeviceServer):
         device_id = parts[1]
         command = parts[2]
         
-        # Отправляем команду через MQTT
         success = mqtt_server.send_command(device_id, command)
         
         if success:
@@ -643,8 +668,6 @@ def setup_bot_handlers(dp: Dispatcher, mqtt_server: MQTTDeviceServer):
                 deleted += 1
         
         await callback.answer(f"🗑 Удалено {deleted} оффлайн устройств")
-        
-        # Обновляем список
         await list_devices(callback)
 
 # ============ ЗАПУСК ============
@@ -679,7 +702,6 @@ async def main():
     print("="*60)
     
     try:
-        # Запускаем бота и MQTT в одном цикле
         await dp.start_polling(bot)
     except KeyboardInterrupt:
         print("\n👋 Остановка...")
