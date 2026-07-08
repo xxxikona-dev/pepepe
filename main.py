@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 MQTT_CONFIG = {
     "host": "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud",
     "port": 8883,  # TLS порт
-    "username": "admin",  # ЗАМЕНИТЕ на ваш логин
-    "password": "your_password_here"  # ЗАМЕНИТЕ на ваш пароль
+    "username": "kkk",  # ЗАМЕНИТЕ на ваш логин
+    "password": "102036514530"  # ЗАМЕНИТЕ на ваш пароль
 }
 
 # ============ БАЗА ДАННЫХ ============
