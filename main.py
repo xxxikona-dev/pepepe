@@ -1,4 +1,4 @@
-# main.py - Серверная часть (Linux/Windows)
+# main.py - Серверная часть с автономным режимом
 import paho.mqtt.client as mqtt
 import json
 import sqlite3
@@ -20,23 +20,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============ КОНФИГУРАЦИЯ HIVEMQ ============
-# ЗАМЕНИТЕ НА ВАШИ ДАННЫЕ!
 MQTT_CONFIG = {
     "host": "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud",
-    "port": 8883,  # TLS порт
-    "username": "admin",  # ЗАМЕНИТЕ на ваш логин
-    "password": "your_password_here"  # ЗАМЕНИТЕ на ваш пароль
+    "port": 8883,
+    "username": "kkk",  # ЗАМЕНИТЕ
+    "password": "102036514530"  # ЗАМЕНИТЕ
 }
 
 # ============ БАЗА ДАННЫХ ============
 DB_PATH = os.path.join(os.path.dirname(__file__), "devices.db")
 
 def init_db():
-    """Инициализация базы данных"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    # Таблица устройств
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devices (
             device_id TEXT PRIMARY KEY,
@@ -48,8 +44,6 @@ def init_db():
             is_online INTEGER DEFAULT 0
         )
     """)
-    
-    # Таблица команд
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS command_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,8 +54,6 @@ def init_db():
             status TEXT
         )
     """)
-    
-    # Таблица скриншотов
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS screenshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,72 +63,49 @@ def init_db():
             filename TEXT
         )
     """)
-    
     conn.commit()
     conn.close()
     logger.info("📦 Database initialized")
 
-def update_device(device_id: str, name: str, os_info: str = None, ip: str = None):
-    """Обновление информации об устройстве"""
+def get_all_devices():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT device_id, name, last_seen, is_online, os_info FROM devices ORDER BY last_seen DESC")
+    devices = cursor.fetchall()
+    conn.close()
+    return devices
+
+def get_device(device_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT device_id, name, last_seen, is_online, os_info FROM devices WHERE device_id = ?", (device_id,))
+    device = cursor.fetchone()
+    conn.close()
+    return device
+
+def update_device(device_id: str, name: str, os_info: str = None):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     current_time = int(time.time())
-    
     cursor.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,))
     existing = cursor.fetchone()
-    
     if existing:
-        cursor.execute("""
-            UPDATE devices 
-            SET name = ?, last_seen = ?, os_info = ?, ip_address = ?, is_online = 1
-            WHERE device_id = ?
-        """, (name, current_time, os_info, ip, device_id))
+        cursor.execute("UPDATE devices SET name = ?, last_seen = ?, os_info = ?, is_online = 1 WHERE device_id = ?",
+                       (name, current_time, os_info, device_id))
     else:
-        cursor.execute("""
-            INSERT INTO devices (device_id, name, last_seen, first_seen, os_info, ip_address, is_online)
-            VALUES (?, ?, ?, ?, ?, ?, 1)
-        """, (device_id, name, current_time, current_time, os_info, ip))
-    
+        cursor.execute("INSERT INTO devices (device_id, name, last_seen, first_seen, os_info, is_online) VALUES (?, ?, ?, ?, ?, 1)",
+                       (device_id, name, current_time, current_time, os_info))
     conn.commit()
     conn.close()
-    logger.info(f"✅ Device updated: {name}")
 
 def set_device_offline(device_id: str):
-    """Отметить устройство как оффлайн"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("UPDATE devices SET is_online = 0 WHERE device_id = ?", (device_id,))
     conn.commit()
     conn.close()
 
-def get_all_devices() -> List[tuple]:
-    """Получить все устройства"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT device_id, name, last_seen, is_online, os_info 
-        FROM devices 
-        ORDER BY last_seen DESC
-    """)
-    devices = cursor.fetchall()
-    conn.close()
-    return devices
-
-def get_device(device_id: str) -> Optional[tuple]:
-    """Получить информацию об устройстве"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT device_id, name, last_seen, is_online, os_info 
-        FROM devices 
-        WHERE device_id = ?
-    """, (device_id,))
-    device = cursor.fetchone()
-    conn.close()
-    return device
-
 def delete_device(device_id: str):
-    """Удалить устройство"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
@@ -144,49 +113,31 @@ def delete_device(device_id: str):
     cursor.execute("DELETE FROM screenshots WHERE device_id = ?", (device_id,))
     conn.commit()
     conn.close()
-    logger.info(f"🗑 Device deleted: {device_id}")
 
 def save_command_history(device_id: str, command: str, result: str = None, status: str = "pending"):
-    """Сохранить историю команд"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO command_history (device_id, command, result, timestamp, status)
-        VALUES (?, ?, ?, ?, ?)
-    """, (device_id, command, result, int(time.time()), status))
+    cursor.execute("INSERT INTO command_history (device_id, command, result, timestamp, status) VALUES (?, ?, ?, ?, ?)",
+                   (device_id, command, result, int(time.time()), status))
     conn.commit()
     conn.close()
 
 def save_screenshot(device_id: str, image_data: str) -> str:
-    """Сохранить скриншот в файл и БД"""
     try:
-        # Декодируем base64
         image_bytes = base64.b64decode(image_data)
-        
-        # Создаем папку если нет
         os.makedirs("screenshots", exist_ok=True)
-        
-        # Создаем имя файла
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"screenshots/screenshot_{device_id[:8]}_{timestamp}.jpg"
-        
-        # Сохраняем файл
         with open(filename, 'wb') as f:
             f.write(image_bytes)
-        
-        # Сохраняем в БД
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO screenshots (device_id, image_data, timestamp, filename)
-            VALUES (?, ?, ?, ?)
-        """, (device_id, image_data, int(time.time()), filename))
+        cursor.execute("INSERT INTO screenshots (device_id, image_data, timestamp, filename) VALUES (?, ?, ?, ?)",
+                       (device_id, image_data, int(time.time()), filename))
         conn.commit()
         conn.close()
-        
         logger.info(f"📸 Screenshot saved: {filename}")
         return filename
-        
     except Exception as e:
         logger.error(f"Error saving screenshot: {e}")
         return None
@@ -194,58 +145,29 @@ def save_screenshot(device_id: str, image_data: str) -> str:
 # ============ MQTT СЕРВЕР ============
 class MQTTDeviceServer:
     def __init__(self):
-        self.client = mqtt.Client(
-            client_id="server_admin",
-            protocol=mqtt.MQTTv311
-        )
-        
-        # Настройка SSL
+        self.client = mqtt.Client(client_id="server_admin", protocol=mqtt.MQTTv311)
         self.client.tls_set()
-        
-        # Аутентификация
-        self.client.username_pw_set(
-            MQTT_CONFIG["username"], 
-            MQTT_CONFIG["password"]
-        )
-        
-        # Callbacks
+        self.client.username_pw_set(MQTT_CONFIG["username"], MQTT_CONFIG["password"])
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect
-        
-        # Состояние
         self.online_devices = set()
         self.pending_commands = {}
         self.running = True
-        
-        # Топики
         self.base_topic = "devices"
-        
         logger.info("🚀 MQTT Server initialized")
     
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             logger.info("✅ Connected to HiveMQ Cloud!")
-            
-            # Подписываемся на все топики
-            topics = [
-                f"{self.base_topic}/+/status",
-                f"{self.base_topic}/+/response",
-                f"{self.base_topic}/+/screenshot",
-                f"{self.base_topic}/+/ping",
-                f"{self.base_topic}/+/info"
-            ]
-            
+            topics = [f"{self.base_topic}/+/status", f"{self.base_topic}/+/response", 
+                      f"{self.base_topic}/+/screenshot", f"{self.base_topic}/+/ping", f"{self.base_topic}/+/info"]
             for topic in topics:
                 self.client.subscribe(topic, qos=1)
                 logger.info(f"📡 Subscribed to: {topic}")
-            
-            # Запускаем проверку оффлайн устройств
             threading.Thread(target=self.check_offline_devices, daemon=True).start()
-            
         else:
             logger.error(f"❌ Connection failed with code: {rc}")
-            logger.info("Проверьте логин и пароль в MQTT_CONFIG")
     
     def on_disconnect(self, client, userdata, rc):
         logger.warning("⚠️ Disconnected from HiveMQ Cloud")
@@ -255,19 +177,15 @@ class MQTTDeviceServer:
             self.connect()
     
     def on_message(self, client, userdata, msg):
-        """Обработка входящих сообщений"""
         try:
             topic = msg.topic
             parts = topic.split('/')
-            
             if len(parts) < 3:
                 return
-            
             device_id = parts[1]
             msg_type = parts[2]
             payload = msg.payload.decode('utf-8')
             
-            # Обработка по типу сообщения
             handlers = {
                 'status': self.handle_status,
                 'ping': self.handle_ping,
@@ -275,98 +193,67 @@ class MQTTDeviceServer:
                 'screenshot': self.handle_screenshot,
                 'info': self.handle_info
             }
-            
             if msg_type in handlers:
                 handlers[msg_type](device_id, payload)
-            else:
-                logger.debug(f"Unknown message type: {msg_type}")
-                
         except Exception as e:
             logger.error(f"Error processing message: {e}")
     
     def handle_status(self, device_id: str, payload: str):
-        """Обработка статуса"""
         try:
             data = json.loads(payload)
             name = data.get('name', 'Unknown')
             os_info = data.get('os', 'Unknown')
-            
             update_device(device_id, name, os_info)
             self.online_devices.add(device_id)
-            
             logger.info(f"🟢 {name} ({device_id[:8]}) подключен")
-            
-            # Отправляем ожидающие команды
             if device_id in self.pending_commands:
                 for cmd in self.pending_commands[device_id]:
                     self.send_command(device_id, cmd)
                 self.pending_commands[device_id] = []
-                
         except json.JSONDecodeError:
             logger.error(f"Invalid JSON in status from {device_id}")
     
     def handle_ping(self, device_id: str, payload: str):
-        """Обработка пинга"""
         try:
             data = json.loads(payload)
             name = data.get('name', 'Unknown')
-            
             update_device(device_id, name)
             self.online_devices.add(device_id)
-            
             logger.debug(f"📡 Ping from {device_id[:8]}")
-            
         except Exception as e:
             logger.error(f"Ping error: {e}")
     
     def handle_response(self, device_id: str, payload: str):
-        """Обработка ответа на команду"""
         try:
             data = json.loads(payload)
             command = data.get('command', '')
             result = data.get('result', '')
-            
-            # Форматируем результат для отображения
             result_str = json.dumps(result, indent=2, ensure_ascii=False)
-            
-            # Сохраняем в историю
             save_command_history(device_id, command, result_str, "completed")
-            
-            # Отображаем результат
             self.display_result(device_id, command, result)
-            
         except Exception as e:
             logger.error(f"Response error: {e}")
     
     def handle_screenshot(self, device_id: str, payload: str):
-        """Обработка скриншота"""
         try:
-            # Сохраняем скриншот
             filename = save_screenshot(device_id, payload)
-            
             if filename:
-                # Получаем имя устройства
                 device = get_device(device_id)
                 name = device[1] if device else device_id[:8]
-                
                 print("\n" + "="*60)
                 print(f"📸 СКРИНШОТ ПОЛУЧЕН")
                 print(f"🖥 Устройство: {name}")
                 print(f"📁 Файл: {filename}")
                 print("="*60 + "\n")
-            
         except Exception as e:
             logger.error(f"Screenshot error: {e}")
     
     def handle_info(self, device_id: str, payload: str):
-        """Обработка системной информации"""
         try:
             data = json.loads(payload)
             name = data.get('name', 'Unknown')
             os_info = data.get('os', 'Unknown')
-            
             update_device(device_id, name, os_info)
-            
             print("\n" + "="*60)
             print(f"💻 СИСТЕМНАЯ ИНФОРМАЦИЯ")
             print(f"🖥 Устройство: {name}")
@@ -379,16 +266,12 @@ class MQTTDeviceServer:
                 else:
                     print(f"  {key}: {value}")
             print("="*60 + "\n")
-            
         except Exception as e:
             logger.error(f"Info error: {e}")
     
     def send_command(self, device_id: str, command: str) -> bool:
-        """Отправка команды устройству"""
         try:
             topic = f"{self.base_topic}/{device_id}/command"
-            
-            # Если устройство оффлайн - сохраняем команду
             if device_id not in self.online_devices:
                 if device_id not in self.pending_commands:
                     self.pending_commands[device_id] = []
@@ -396,37 +279,25 @@ class MQTTDeviceServer:
                 logger.info(f"💾 Command '{command}' saved for offline device {device_id[:8]}")
                 save_command_history(device_id, command, None, "queued")
                 return True
-            
-            payload = json.dumps({
-                'command': command,
-                'timestamp': int(time.time())
-            })
-            
+            payload = json.dumps({'command': command, 'timestamp': int(time.time())})
             result = self.client.publish(topic, payload, qos=1)
-            
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 save_command_history(device_id, command, None, "sent")
                 logger.info(f"🚀 Command '{command}' sent to {device_id[:8]}")
                 return True
-            else:
-                logger.error(f"❌ Failed to send command to {device_id[:8]}")
-                return False
-                
+            return False
         except Exception as e:
-            logger.error(f"Error sending command: {e}")
+            logger.error(f"Send command error: {e}")
             return False
     
     def display_result(self, device_id: str, command: str, result: Any):
-        """Отображение результата"""
         device = get_device(device_id)
         name = device[1] if device else device_id[:8]
-        
         print("\n" + "="*60)
         print(f"📌 РЕЗУЛЬТАТ КОМАНДЫ")
         print(f"🖥 Устройство: {name}")
         print(f"📋 Команда: {command}")
         print("="*60)
-        
         if isinstance(result, dict):
             for key, value in result.items():
                 if key == 'screenshot':
@@ -440,35 +311,25 @@ class MQTTDeviceServer:
                     print(f"  {key}: {value}")
         else:
             print(f"  {result}")
-        
         print("="*60 + "\n")
     
     def check_offline_devices(self):
-        """Проверка оффлайн устройств"""
         while self.running:
             try:
                 time.sleep(30)
-                
                 devices = get_all_devices()
                 current_time = int(time.time())
-                
                 for device_id, name, last_seen, is_online, _ in devices:
                     if current_time - last_seen > 120 and is_online:
                         set_device_offline(device_id)
                         self.online_devices.discard(device_id)
                         logger.info(f"🔴 {name} ({device_id[:8]}) перешел в оффлайн")
-                        
             except Exception as e:
                 logger.error(f"Check offline error: {e}")
     
     def connect(self) -> bool:
-        """Подключение к брокеру"""
         try:
-            self.client.connect(
-                MQTT_CONFIG["host"],
-                MQTT_CONFIG["port"],
-                60
-            )
+            self.client.connect(MQTT_CONFIG["host"], MQTT_CONFIG["port"], 60)
             self.client.loop_start()
             return True
         except Exception as e:
@@ -476,39 +337,31 @@ class MQTTDeviceServer:
             return False
     
     def disconnect(self):
-        """Отключение от брокера"""
         self.running = False
         self.client.loop_stop()
         self.client.disconnect()
         logger.info("👋 Disconnected")
     
     def list_devices(self):
-        """Список устройств"""
         devices = get_all_devices()
-        
         if not devices:
             print("\n❌ Нет подключенных устройств")
             return
-        
         print("\n" + "="*70)
         print(f"📋 СПИСОК УСТРОЙСТВ (Всего: {len(devices)})")
         print("="*70)
-        
         for device_id, name, last_seen, is_online, os_info in devices:
             status = "🟢 Онлайн" if is_online else "🔴 Оффлайн"
             last = datetime.fromtimestamp(last_seen).strftime("%H:%M:%S %d.%m.%Y")
             os_short = os_info[:30] if os_info else "Неизвестно"
             print(f"{status} | {name:15} | ID: {device_id[:8]}... | {last} | {os_short}")
-        
         print("="*70)
     
     def show_device_info(self, device_id: str):
-        """Информация об устройстве"""
         device = get_device(device_id)
         if not device:
             print(f"❌ Устройство {device_id[:8]}... не найдено")
             return
-        
         print("\n" + "="*60)
         print(f"💻 ИНФОРМАЦИЯ О УСТРОЙСТВЕ")
         print("="*60)
@@ -518,41 +371,12 @@ class MQTTDeviceServer:
         print(f"Статус: {'🟢 Онлайн' if device[3] else '🔴 Оффлайн'}")
         print(f"Последнее: {datetime.fromtimestamp(device[2]).strftime('%H:%M:%S %d.%m.%Y')}")
         print("="*60)
-    
-    def show_history(self, device_id: str, limit: int = 10):
-        """Показать историю команд устройства"""
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT command, result, timestamp, status 
-            FROM command_history 
-            WHERE device_id = ? 
-            ORDER BY timestamp DESC 
-            LIMIT ?
-        """, (device_id, limit))
-        history = cursor.fetchall()
-        conn.close()
-        
-        if not history:
-            print(f"❌ Нет истории для устройства {device_id[:8]}...")
-            return
-        
-        print("\n" + "="*60)
-        print(f"📜 ИСТОРИЯ КОМАНД")
-        print("="*60)
-        
-        for command, result, timestamp, status in history:
-            dt = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
-            status_emoji = "✅" if status == "completed" else "⏳" if status == "sent" else "💾"
-            print(f"{dt} {status_emoji} {command}")
-            if result and len(result) < 200:
-                print(f"   Результат: {result[:100]}")
-        print("="*60)
 
-# ============ КОНСОЛЬНЫЙ ИНТЕРФЕЙС ============
+# ============ КОНСОЛЬНЫЙ ИНТЕРФЕЙС С ЗАЩИТОЙ ОТ EOF ============
 class ConsoleUI:
     def __init__(self, server: MQTTDeviceServer):
         self.server = server
+        self.running = True
         self.commands = {
             'list': self.cmd_list,
             'info': self.cmd_info,
@@ -567,7 +391,6 @@ class ConsoleUI:
         }
     
     def show_help(self):
-        """Показать помощь"""
         print("\n" + "="*60)
         print("🤖 MQTT DEVICE SERVER v2.0")
         print("="*60)
@@ -583,6 +406,18 @@ class ConsoleUI:
         print("  help                 - показать это сообщение")
         print("  exit                 - выйти")
         print("="*60 + "\n")
+    
+    def safe_input(self, prompt="> "):
+        """Безопасный ввод с защитой от EOF"""
+        try:
+            # Проверяем, есть ли терминал
+            if sys.stdin.isatty():
+                return input(prompt)
+            else:
+                # Если нет терминала - ждем команду из аргументов
+                return None
+        except (EOFError, KeyboardInterrupt):
+            return None
     
     def cmd_list(self, args):
         self.server.list_devices()
@@ -644,17 +479,30 @@ class ConsoleUI:
         self.show_help()
     
     def cmd_exit(self, args):
-        print("👋 Выход...")
+        self.running = False
         return False
     
     def run(self):
         """Запуск интерфейса"""
         self.show_help()
         
-        while True:
+        # Если нет терминала - работаем в фоновом режиме
+        if not sys.stdin.isatty():
+            logger.info("📡 Работа в фоновом режиме (интерактивный ввод недоступен)")
+            logger.info("Для управления используйте API или подключайтесь через терминал")
+            while self.running:
+                time.sleep(1)
+            return
+        
+        while self.running:
             try:
-                cmd_input = input("> ").strip()
+                cmd_input = self.safe_input("> ")
                 
+                if cmd_input is None:
+                    # EOF или прерывание - выходим
+                    break
+                
+                cmd_input = cmd_input.strip()
                 if not cmd_input:
                     continue
                 
@@ -670,6 +518,9 @@ class ConsoleUI:
                     print(f"❌ Неизвестная команда: {cmd_name}. Введите 'help'")
                     
             except KeyboardInterrupt:
+                print("\n👋 Выход...")
+                break
+            except EOFError:
                 print("\n👋 Выход...")
                 break
             except Exception as e:
