@@ -1,15 +1,19 @@
-# main.py - Серверная часть с автономным режимом
+# main.py - MQTT Server + Telegram Bot
 import paho.mqtt.client as mqtt
 import json
 import sqlite3
 import time
 import os
-from datetime import datetime
-import base64
+import asyncio
 import threading
 import logging
 import sys
+from datetime import datetime
+import base64
 from typing import Dict, List, Optional, Any
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 
 # ============ НАСТРОЙКА ЛОГИРОВАНИЯ ============
 logging.basicConfig(
@@ -19,13 +23,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ КОНФИГУРАЦИЯ HIVEMQ ============
+# ============ КОНФИГУРАЦИЯ ============
+
+# MQTT
 MQTT_CONFIG = {
     "host": "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud",
     "port": 8883,
-    "username": "kkk",  # ЗАМЕНИТЕ
-    "password": "102036514530"  # ЗАМЕНИТЕ
+    "username": "admin",  # ЗАМЕНИТЕ
+    "password": "your_password_here"  # ЗАМЕНИТЕ
 }
+
+# Telegram
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # ЗАМЕНИТЕ НА ТОКЕН ВАШЕГО БОТА
+ADMIN_ID = 5153650495  # ВАШ ID В TELEGRAM
 
 # ============ БАЗА ДАННЫХ ============
 DB_PATH = os.path.join(os.path.dirname(__file__), "devices.db")
@@ -33,6 +43,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "devices.db")
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devices (
             device_id TEXT PRIMARY KEY,
@@ -44,6 +55,7 @@ def init_db():
             is_online INTEGER DEFAULT 0
         )
     """)
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS command_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,6 +66,7 @@ def init_db():
             status TEXT
         )
     """)
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS screenshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,6 +76,7 @@ def init_db():
             filename TEXT
         )
     """)
+    
     conn.commit()
     conn.close()
     logger.info("📦 Database initialized")
@@ -142,9 +156,41 @@ def save_screenshot(device_id: str, image_data: str) -> str:
         logger.error(f"Error saving screenshot: {e}")
         return None
 
+# ============ КЛАВИАТУРЫ ДЛЯ TELEGRAM ============
+
+def get_main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Список устройств", callback_data="list_devices")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="🗑 Очистить оффлайн", callback_data="clean_offline")]
+    ])
+
+def get_device_menu(device_id: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📸 Скриншот", callback_data=f"cmd_{device_id}_screenshot")],
+        [InlineKeyboardButton(text="💻 Системная информация", callback_data=f"cmd_{device_id}_sysinfo")],
+        [InlineKeyboardButton(text="📋 Список процессов", callback_data=f"cmd_{device_id}_tasklist")],
+        [InlineKeyboardButton(text="🌐 Сетевая информация", callback_data=f"cmd_{device_id}_netinfo")],
+        [InlineKeyboardButton(text="🔋 Батарея", callback_data=f"cmd_{device_id}_battery")],
+        [InlineKeyboardButton(text="⚙️ Системные действия", callback_data=f"sys_actions_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")]
+    ])
+
+def get_system_actions_menu(device_id: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔒 Блокировка", callback_data=f"cmd_{device_id}_lock")],
+        [InlineKeyboardButton(text="🌙 Сон", callback_data=f"cmd_{device_id}_sleep")],
+        [InlineKeyboardButton(text="🔄 Перезагрузка", callback_data=f"cmd_{device_id}_reboot")],
+        [InlineKeyboardButton(text="🛑 Выключение", callback_data=f"cmd_{device_id}_shutdown")],
+        [InlineKeyboardButton(text="🔊 Громкость MAX", callback_data=f"cmd_{device_id}_volmax")],
+        [InlineKeyboardButton(text="📝 Блокнот", callback_data=f"cmd_{device_id}_notepad")],
+        [InlineKeyboardButton(text="🧮 Калькулятор", callback_data=f"cmd_{device_id}_calc")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"device_{device_id}")]
+    ])
+
 # ============ MQTT СЕРВЕР ============
 class MQTTDeviceServer:
-    def __init__(self):
+    def __init__(self, bot: Bot = None):
         self.client = mqtt.Client(client_id="server_admin", protocol=mqtt.MQTTv311)
         self.client.tls_set()
         self.client.username_pw_set(MQTT_CONFIG["username"], MQTT_CONFIG["password"])
@@ -155,6 +201,7 @@ class MQTTDeviceServer:
         self.pending_commands = {}
         self.running = True
         self.base_topic = "devices"
+        self.bot = bot
         logger.info("🚀 MQTT Server initialized")
     
     def on_connect(self, client, userdata, flags, rc):
@@ -206,6 +253,11 @@ class MQTTDeviceServer:
             update_device(device_id, name, os_info)
             self.online_devices.add(device_id)
             logger.info(f"🟢 {name} ({device_id[:8]}) подключен")
+            
+            # Уведомление в Telegram
+            if self.bot:
+                asyncio.create_task(self.send_telegram_notification(f"🟢 Устройство подключено: {name}"))
+            
             if device_id in self.pending_commands:
                 for cmd in self.pending_commands[device_id]:
                     self.send_command(device_id, cmd)
@@ -230,6 +282,29 @@ class MQTTDeviceServer:
             result = data.get('result', '')
             result_str = json.dumps(result, indent=2, ensure_ascii=False)
             save_command_history(device_id, command, result_str, "completed")
+            
+            # Отправляем результат в Telegram
+            if self.bot:
+                device = get_device(device_id)
+                name = device[1] if device else device_id[:8]
+                
+                if command == "screenshot":
+                    # Скриншот обрабатывается отдельно
+                    pass
+                else:
+                    text = f"📌 Результат команды *{command}*\n"
+                    text += f"🖥 Устройство: *{name}*\n\n"
+                    if isinstance(result, dict):
+                        for key, value in result.items():
+                            if isinstance(value, (dict, list)):
+                                text += f"*{key}:*\n```json\n{json.dumps(value, indent=2, ensure_ascii=False)}\n```\n"
+                            else:
+                                text += f"*{key}:* {value}\n"
+                    else:
+                        text += f"```\n{result}\n```"
+                    
+                    asyncio.create_task(self.send_telegram_message(text))
+            
             self.display_result(device_id, command, result)
         except Exception as e:
             logger.error(f"Response error: {e}")
@@ -240,6 +315,20 @@ class MQTTDeviceServer:
             if filename:
                 device = get_device(device_id)
                 name = device[1] if device else device_id[:8]
+                
+                # Отправляем скриншот в Telegram
+                if self.bot:
+                    try:
+                        image_bytes = base64.b64decode(payload)
+                        asyncio.create_task(
+                            self.send_telegram_photo(
+                                image_bytes, 
+                                f"📸 Скриншот с ПК: *{name}*"
+                            )
+                        )
+                    except Exception as e:
+                        logger.error(f"Error sending screenshot to Telegram: {e}")
+                
                 print("\n" + "="*60)
                 print(f"📸 СКРИНШОТ ПОЛУЧЕН")
                 print(f"🖥 Устройство: {name}")
@@ -254,6 +343,25 @@ class MQTTDeviceServer:
             name = data.get('name', 'Unknown')
             os_info = data.get('os', 'Unknown')
             update_device(device_id, name, os_info)
+            
+            # Отправляем информацию в Telegram
+            if self.bot:
+                text = f"💻 *Системная информация*\n"
+                text += f"🖥 Устройство: *{name}*\n\n"
+                for key, value in data.items():
+                    if key == 'memory':
+                        text += f"*Память:*\n"
+                        for k, v in value.items():
+                            text += f"  {k}: {v}\n"
+                    elif key == 'disks':
+                        text += f"*Диски:*\n"
+                        for disk in value:
+                            text += f"  {disk['drive']}: {disk['total_gb']}GB, свободно: {disk['free_gb']}GB\n"
+                    else:
+                        text += f"*{key}:* {value}\n"
+                
+                asyncio.create_task(self.send_telegram_message(text))
+            
             print("\n" + "="*60)
             print(f"💻 СИСТЕМНАЯ ИНФОРМАЦИЯ")
             print(f"🖥 Устройство: {name}")
@@ -324,6 +432,9 @@ class MQTTDeviceServer:
                         set_device_offline(device_id)
                         self.online_devices.discard(device_id)
                         logger.info(f"🔴 {name} ({device_id[:8]}) перешел в оффлайн")
+                        
+                        if self.bot:
+                            asyncio.create_task(self.send_telegram_notification(f"🔴 Устройство отключилось: {name}"))
             except Exception as e:
                 logger.error(f"Check offline error: {e}")
     
@@ -342,224 +453,243 @@ class MQTTDeviceServer:
         self.client.disconnect()
         logger.info("👋 Disconnected")
     
-    def list_devices(self):
+    # ============ TELEGRAM HELPERS ============
+    
+    async def send_telegram_message(self, text: str):
+        if self.bot:
+            try:
+                await self.bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Error sending Telegram message: {e}")
+    
+    async def send_telegram_photo(self, image_bytes: bytes, caption: str = ""):
+        if self.bot:
+            try:
+                await self.bot.send_photo(
+                    ADMIN_ID,
+                    BufferedInputFile(image_bytes, filename="screenshot.jpg"),
+                    caption=caption,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Error sending Telegram photo: {e}")
+    
+    async def send_telegram_notification(self, text: str):
+        if self.bot:
+            try:
+                await self.bot.send_message(ADMIN_ID, f"🔔 {text}")
+            except Exception as e:
+                logger.error(f"Error sending notification: {e}")
+
+# ============ TELEGRAM БОТ ============
+
+def setup_bot_handlers(dp: Dispatcher, mqtt_server: MQTTDeviceServer):
+    
+    @dp.message(Command("start"))
+    async def cmd_start(message: types.Message):
+        if message.from_user.id != ADMIN_ID:
+            await message.answer("❌ Доступ запрещен")
+            return
+        await message.answer(
+            "🤖 MQTT Device Manager\n"
+            "Управляйте своими устройствами через Telegram",
+            reply_markup=get_main_menu()
+        )
+    
+    @dp.callback_query(lambda c: c.data == "main_menu")
+    async def main_menu(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Доступ запрещен")
+            return
+        await callback.message.edit_text(
+            "🤖 Главное меню",
+            reply_markup=get_main_menu()
+        )
+        await callback.answer()
+    
+    @dp.callback_query(lambda c: c.data == "list_devices")
+    async def list_devices(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Доступ запрещен")
+            return
+        
         devices = get_all_devices()
         if not devices:
-            print("\n❌ Нет подключенных устройств")
+            await callback.message.edit_text(
+                "❌ Нет подключенных устройств",
+                reply_markup=get_main_menu()
+            )
+            await callback.answer()
             return
-        print("\n" + "="*70)
-        print(f"📋 СПИСОК УСТРОЙСТВ (Всего: {len(devices)})")
-        print("="*70)
+        
+        text = "📋 *Список устройств:*\n\n"
+        keyboard = []
+        
         for device_id, name, last_seen, is_online, os_info in devices:
             status = "🟢 Онлайн" if is_online else "🔴 Оффлайн"
-            last = datetime.fromtimestamp(last_seen).strftime("%H:%M:%S %d.%m.%Y")
-            os_short = os_info[:30] if os_info else "Неизвестно"
-            print(f"{status} | {name:15} | ID: {device_id[:8]}... | {last} | {os_short}")
-        print("="*70)
+            last = datetime.fromtimestamp(last_seen).strftime("%H:%M:%S")
+            text += f"{status} *{name}*\n"
+            text += f"  ID: `{device_id[:8]}...`\n"
+            text += f"  Последнее: {last}\n\n"
+            keyboard.append([InlineKeyboardButton(
+                text=f"{status} {name}",
+                callback_data=f"device_{device_id}"
+            )])
+        
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")])
+        
+        await callback.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        await callback.answer()
     
-    def show_device_info(self, device_id: str):
+    @dp.callback_query(lambda c: c.data.startswith("device_"))
+    async def device_menu(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Доступ запрещен")
+            return
+        
+        device_id = callback.data.replace("device_", "")
         device = get_device(device_id)
         if not device:
-            print(f"❌ Устройство {device_id[:8]}... не найдено")
+            await callback.answer("❌ Устройство не найдено")
             return
-        print("\n" + "="*60)
-        print(f"💻 ИНФОРМАЦИЯ О УСТРОЙСТВЕ")
-        print("="*60)
-        print(f"ID: {device[0]}")
-        print(f"Имя: {device[1]}")
-        print(f"ОС: {device[4] if device[4] else 'Неизвестно'}")
-        print(f"Статус: {'🟢 Онлайн' if device[3] else '🔴 Оффлайн'}")
-        print(f"Последнее: {datetime.fromtimestamp(device[2]).strftime('%H:%M:%S %d.%m.%Y')}")
-        print("="*60)
-
-# ============ КОНСОЛЬНЫЙ ИНТЕРФЕЙС С ЗАЩИТОЙ ОТ EOF ============
-class ConsoleUI:
-    def __init__(self, server: MQTTDeviceServer):
-        self.server = server
-        self.running = True
-        self.commands = {
-            'list': self.cmd_list,
-            'info': self.cmd_info,
-            'cmd': self.cmd_send,
-            'screenshot': self.cmd_screenshot,
-            'sysinfo': self.cmd_sysinfo,
-            'history': self.cmd_history,
-            'delete': self.cmd_delete,
-            'clean': self.cmd_clean,
-            'help': self.cmd_help,
-            'exit': self.cmd_exit
-        }
+        
+        status = "🟢 Онлайн" if device[3] else "🔴 Оффлайн"
+        text = f"💻 *{device[1]}*\n"
+        text += f"Статус: {status}\n"
+        text += f"🆔 ID: `{device_id}`\n"
+        text += f"💿 ОС: {device[4] or 'Неизвестно'}\n"
+        
+        await callback.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=get_device_menu(device_id)
+        )
+        await callback.answer()
     
-    def show_help(self):
-        print("\n" + "="*60)
-        print("🤖 MQTT DEVICE SERVER v2.0")
-        print("="*60)
-        print("Доступные команды:")
-        print("  list                 - показать все устройства")
-        print("  info <device_id>     - информация об устройстве")
-        print("  history <device_id>  - история команд")
-        print("  cmd <id> <command>   - отправить команду")
-        print("  screenshot <id>      - сделать скриншот")
-        print("  sysinfo <id>         - получить системную инфо")
-        print("  delete <id>          - удалить устройство")
-        print("  clean                - удалить все оффлайн устройства")
-        print("  help                 - показать это сообщение")
-        print("  exit                 - выйти")
-        print("="*60 + "\n")
-    
-    def safe_input(self, prompt="> "):
-        """Безопасный ввод с защитой от EOF"""
-        try:
-            # Проверяем, есть ли терминал
-            if sys.stdin.isatty():
-                return input(prompt)
-            else:
-                # Если нет терминала - ждем команду из аргументов
-                return None
-        except (EOFError, KeyboardInterrupt):
-            return None
-    
-    def cmd_list(self, args):
-        self.server.list_devices()
-    
-    def cmd_info(self, args):
-        if not args:
-            print("❌ Использование: info <device_id>")
+    @dp.callback_query(lambda c: c.data.startswith("sys_actions_"))
+    async def system_actions(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Доступ запрещен")
             return
-        self.server.show_device_info(args[0])
+        
+        device_id = callback.data.replace("sys_actions_", "")
+        await callback.message.edit_text(
+            "⚙️ *Системные действия*",
+            parse_mode="Markdown",
+            reply_markup=get_system_actions_menu(device_id)
+        )
+        await callback.answer()
     
-    def cmd_history(self, args):
-        if not args:
-            print("❌ Использование: history <device_id>")
+    @dp.callback_query(lambda c: c.data.startswith("cmd_"))
+    async def execute_command(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Доступ запрещен")
             return
-        limit = int(args[1]) if len(args) > 1 else 10
-        self.server.show_history(args[0], limit)
-    
-    def cmd_send(self, args):
-        if len(args) < 2:
-            print("❌ Использование: cmd <device_id> <command>")
+        
+        parts = callback.data.split("_")
+        if len(parts) < 3:
+            await callback.answer("❌ Ошибка")
             return
-        device_id = args[0]
-        command = ' '.join(args[1:])
-        self.server.send_command(device_id, command)
+        
+        device_id = parts[1]
+        command = parts[2]
+        
+        # Отправляем команду через MQTT
+        success = mqtt_server.send_command(device_id, command)
+        
+        if success:
+            await callback.answer(f"✅ Команда '{command}' отправлена")
+        else:
+            await callback.answer(f"❌ Не удалось отправить команду")
     
-    def cmd_screenshot(self, args):
-        if not args:
-            print("❌ Использование: screenshot <device_id>")
+    @dp.callback_query(lambda c: c.data == "stats")
+    async def stats(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Доступ запрещен")
             return
-        self.server.send_command(args[0], "screenshot")
-        print(f"📸 Команда screenshot отправлена {args[0][:8]}...")
+        
+        devices = get_all_devices()
+        total = len(devices)
+        online = sum(1 for d in devices if d[3])
+        
+        text = "📊 *Статистика*\n\n"
+        text += f"📱 Всего устройств: {total}\n"
+        text += f"🟢 Онлайн: {online}\n"
+        text += f"🔴 Оффлайн: {total - online}\n"
+        text += f"📈 Активность: {int(online/total*100) if total > 0 else 0}%"
+        
+        await callback.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=get_main_menu()
+        )
+        await callback.answer()
     
-    def cmd_sysinfo(self, args):
-        if not args:
-            print("❌ Использование: sysinfo <device_id>")
+    @dp.callback_query(lambda c: c.data == "clean_offline")
+    async def clean_offline(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Доступ запрещен")
             return
-        self.server.send_command(args[0], "sysinfo")
-        print(f"💻 Команда sysinfo отправлена {args[0][:8]}...")
-    
-    def cmd_delete(self, args):
-        if not args:
-            print("❌ Использование: delete <device_id>")
-            return
-        delete_device(args[0])
-        self.server.online_devices.discard(args[0])
-        print(f"✅ Устройство {args[0][:8]}... удалено")
-    
-    def cmd_clean(self, args):
+        
         devices = get_all_devices()
         deleted = 0
         for device_id, _, _, is_online, _ in devices:
             if not is_online:
                 delete_device(device_id)
-                self.server.online_devices.discard(device_id)
                 deleted += 1
-        print(f"✅ Удалено {deleted} оффлайн устройств")
-    
-    def cmd_help(self, args):
-        self.show_help()
-    
-    def cmd_exit(self, args):
-        self.running = False
-        return False
-    
-    def run(self):
-        """Запуск интерфейса"""
-        self.show_help()
         
-        # Если нет терминала - работаем в фоновом режиме
-        if not sys.stdin.isatty():
-            logger.info("📡 Работа в фоновом режиме (интерактивный ввод недоступен)")
-            logger.info("Для управления используйте API или подключайтесь через терминал")
-            while self.running:
-                time.sleep(1)
-            return
+        await callback.answer(f"🗑 Удалено {deleted} оффлайн устройств")
         
-        while self.running:
-            try:
-                cmd_input = self.safe_input("> ")
-                
-                if cmd_input is None:
-                    # EOF или прерывание - выходим
-                    break
-                
-                cmd_input = cmd_input.strip()
-                if not cmd_input:
-                    continue
-                
-                parts = cmd_input.split()
-                cmd_name = parts[0].lower()
-                args = parts[1:] if len(parts) > 1 else []
-                
-                if cmd_name in self.commands:
-                    result = self.commands[cmd_name](args)
-                    if result is False:
-                        break
-                else:
-                    print(f"❌ Неизвестная команда: {cmd_name}. Введите 'help'")
-                    
-            except KeyboardInterrupt:
-                print("\n👋 Выход...")
-                break
-            except EOFError:
-                print("\n👋 Выход...")
-                break
-            except Exception as e:
-                print(f"❌ Ошибка: {e}")
+        # Обновляем список
+        await list_devices(callback)
 
 # ============ ЗАПУСК ============
-def main():
+
+async def main():
     print("="*60)
-    print("🤖 MQTT DEVICE SERVER v2.0")
-    print("📡 Подключение к HiveMQ Cloud...")
+    print("🤖 MQTT Device Manager + Telegram Bot")
     print("="*60)
     
     # Инициализация БД
     init_db()
     
-    # Создаем сервер
-    server = MQTTDeviceServer()
+    # Создаем бота
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
     
-    # Подключаемся
-    if not server.connect():
-        print("\n❌ Не удалось подключиться к HiveMQ Cloud")
-        print("Проверьте настройки в MQTT_CONFIG:")
-        print(f"  Host: {MQTT_CONFIG['host']}")
-        print(f"  Port: {MQTT_CONFIG['port']}")
-        print(f"  Username: {MQTT_CONFIG['username']}")
-        print("  Password: ********")
+    # Создаем MQTT сервер
+    mqtt_server = MQTTDeviceServer(bot)
+    
+    # Настраиваем обработчики бота
+    setup_bot_handlers(dp, mqtt_server)
+    
+    # Подключаем MQTT
+    if not mqtt_server.connect():
+        print("❌ Не удалось подключиться к HiveMQ Cloud")
+        print("Проверьте настройки MQTT_CONFIG")
         return
     
-    # Запускаем интерфейс
-    ui = ConsoleUI(server)
-    ui.run()
+    # Запускаем бота
+    print("🤖 Telegram бот запущен!")
+    print(f"📱 Ваш ID в Telegram: {ADMIN_ID}")
+    print("="*60)
     
-    # Отключаемся
-    server.disconnect()
-    print("👋 Сервер остановлен")
+    try:
+        # Запускаем бота и MQTT в одном цикле
+        await dp.start_polling(bot)
+    except KeyboardInterrupt:
+        print("\n👋 Остановка...")
+    finally:
+        mqtt_server.disconnect()
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:
-        main()
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("\n👋 Программа остановлена")
     except Exception as e:
