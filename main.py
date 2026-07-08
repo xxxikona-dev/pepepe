@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 MQTT_CONFIG = {
     "host": "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud",
     "port": 8883,
-    "username": "admin",  # ЗАМЕНИТЕ
-    "password": "your_password_here"  # ЗАМЕНИТЕ
+    "username": "kkk",  # ЗАМЕНИТЕ
+    "password": "102036514530"  # ЗАМЕНИТЕ
 }
 
 # Telegram
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # ЗАМЕНИТЕ НА ТОКЕН ВАШЕГО БОТА
+BOT_TOKEN = "BOT_TOKEN"  # ЗАМЕНИТЕ НА ТОКЕН ВАШЕГО БОТА
 ADMIN_ID = 5153650495  # ВАШ ID В TELEGRAM
 
 # ============ БАЗА ДАННЫХ ============
