@@ -1,4 +1,4 @@
-# main.py - Серверная часть с MQTT
+# main.py - Серверная часть (Linux/Windows)
 import paho.mqtt.client as mqtt
 import json
 import sqlite3
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 MQTT_CONFIG = {
     "host": "04f19c56c4b441a68aa08dafd39d7713.s1.eu.hivemq.cloud",
     "port": 8883,  # TLS порт
-    "username": "kkk",  # ЗАМЕНИТЕ на ваш логин
-    "password": "102036514530"  # ЗАМЕНИТЕ на ваш пароль
+    "username": "admin",  # ЗАМЕНИТЕ на ваш логин
+    "password": "your_password_here"  # ЗАМЕНИТЕ на ваш пароль
 }
 
 # ============ БАЗА ДАННЫХ ============
@@ -163,9 +163,12 @@ def save_screenshot(device_id: str, image_data: str) -> str:
         # Декодируем base64
         image_bytes = base64.b64decode(image_data)
         
+        # Создаем папку если нет
+        os.makedirs("screenshots", exist_ok=True)
+        
         # Создаем имя файла
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshot_{device_id[:8]}_{timestamp}.jpg"
+        filename = f"screenshots/screenshot_{device_id[:8]}_{timestamp}.jpg"
         
         # Сохраняем файл
         with open(filename, 'wb') as f:
@@ -369,7 +372,12 @@ class MQTTDeviceServer:
             print(f"🖥 Устройство: {name}")
             print("="*60)
             for key, value in data.items():
-                print(f"  {key}: {value}")
+                if key in ['memory', 'disks']:
+                    print(f"  {key}:")
+                    for k, v in value.items():
+                        print(f"    {k}: {v}")
+                else:
+                    print(f"  {key}: {value}")
             print("="*60 + "\n")
             
         except Exception as e:
@@ -423,6 +431,8 @@ class MQTTDeviceServer:
             for key, value in result.items():
                 if key == 'screenshot':
                     print(f"  {key}: <base64 image>")
+                elif key == 'error':
+                    print(f"  ❌ {key}: {value}")
                 elif isinstance(value, (dict, list)):
                     print(f"  {key}:")
                     print(json.dumps(value, indent=4, ensure_ascii=False))
@@ -533,7 +543,7 @@ class MQTTDeviceServer:
         
         for command, result, timestamp, status in history:
             dt = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
-            status_emoji = "✅" if status == "completed" else "⏳"
+            status_emoji = "✅" if status == "completed" else "⏳" if status == "sent" else "💾"
             print(f"{dt} {status_emoji} {command}")
             if result and len(result) < 200:
                 print(f"   Результат: {result[:100]}")
